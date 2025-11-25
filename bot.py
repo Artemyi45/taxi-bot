@@ -4,6 +4,11 @@ import datetime
 import json
 import os
 
+is_working = False
+shift_start_time = None
+
+bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
+
 def save_shift_to_json(user_id, start_time, end_time, duration_str):
     """Сохраняет данные о смене в JSON файл"""
     
@@ -32,10 +37,6 @@ def save_shift_to_json(user_id, start_time, end_time, duration_str):
     
     print(f"✅ Смена сохранена в JSON для пользователя {user_id}")
 
-is_working = False
-shift_start_time = None
-
-bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -47,6 +48,37 @@ def send_welcome(message):
     bot.send_message(message.chat.id,
                      'Выбери действие:',
                      reply_markup=markup)
+    
+
+@bot.message_handler(commands=['download'])
+def download_json(message):
+    """Отправляет файл shifts.json пользователю"""
+    try:
+        # Проверяем существует ли файл
+        if not os.path.exists('shifts.json'):
+            bot.reply_to(message, "📭 Файл shifts.json пока не создан")
+            return
+        
+        # Читаем файл
+        with open('shifts.json', 'r', encoding='utf-8') as f:
+            json_data = f.read()
+        
+        # Создаём временный файл для отправки
+        with open('temp_shifts.json', 'w', encoding='utf-8') as f:
+            f.write(json_data)
+        
+        # Отправляем файл
+        with open('temp_shifts.json', 'rb') as f:
+            bot.send_document(message.chat.id, f, caption="📊 Данные ваших смен")
+        
+        # Удаляем временный файл
+        os.remove('temp_shifts.json')
+        
+        print(f"✅ Файл отправлен пользователю {message.from_user.id}")
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка при отправке файла: {e}")
+        print(f"❌ Ошибка: {e}")
 
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
@@ -92,36 +124,6 @@ def handle_buttons(message):
         else:
             bot.send_message(message.chat.id, "Смена не начата!")
 
-
-@bot.message_handler(commands=['download'])
-def download_json(message):
-    """Отправляет файл shifts.json пользователю"""
-    try:
-        # Проверяем существует ли файл
-        if not os.path.exists('shifts.json'):
-            bot.reply_to(message, "📭 Файл shifts.json пока не создан")
-            return
-        
-        # Читаем файл
-        with open('shifts.json', 'r', encoding='utf-8') as f:
-            json_data = f.read()
-        
-        # Создаём временный файл для отправки
-        with open('temp_shifts.json', 'w', encoding='utf-8') as f:
-            f.write(json_data)
-        
-        # Отправляем файл
-        with open('temp_shifts.json', 'rb') as f:
-            bot.send_document(message.chat.id, f, caption="📊 Данные ваших смен")
-        
-        # Удаляем временный файл
-        os.remove('temp_shifts.json')
-        
-        print(f"✅ Файл отправлен пользователю {message.from_user.id}")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка при отправке файла: {e}")
-        print(f"❌ Ошибка: {e}")
 
 print("✅ Бот запущен с сохранением в JSON!")
 bot.polling()
