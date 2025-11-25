@@ -78,7 +78,7 @@ def send_motivation(chat_id):
     import time
     
     def motivation_timer():
-        time.sleep(30)  # Ждём 30 секунд
+        time.sleep(3)  # Ждём 30 секунд
         
         # Проверяем что смена ещё активна и не на паузе
         if is_working and not is_paused:
