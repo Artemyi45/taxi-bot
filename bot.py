@@ -3,6 +3,13 @@ from telebot import types
 import datetime
 import json
 import os
+import pytz
+
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+
+def get_moscow_time():
+    """Возвращает текущее время в московском поясе"""
+    return datetime.datetime.now(MOSCOW_TZ)
 
 is_working = False
 shift_start_time = None
@@ -18,7 +25,7 @@ def save_shift_to_json(user_id, start_time, end_time, duration_str):
         "start_time": start_time.isoformat(),  # Преобразуем время в строку
         "end_time": end_time.isoformat(),
         "duration": duration_str,
-        "date": datetime.datetime.now().strftime("%Y-%m-%d")
+        "date": get_moscow_time().strftime("%Y-%m-%d")
     }
     
     # Читаем существующие данные или создаём новые
@@ -87,7 +94,7 @@ def handle_buttons(message):
     if message.text == 'Начать смену':
         if not is_working:
             is_working = True
-            shift_start_time = datetime.datetime.now()
+            shift_start_time = get_moscow_time()
             bot.send_message(message.chat.id, "Смена начата! 🚕")
         else:
             bot.send_message(message.chat.id, "Смена уже начата!")
@@ -95,7 +102,7 @@ def handle_buttons(message):
     elif message.text == 'Завершить смену':
         if is_working:
             # Считаем разницу времени
-            end_time = datetime.datetime.now()
+            end_time = get_moscow_time()
             work_duration = end_time - shift_start_time
             total_seconds = work_duration.total_seconds()
             
