@@ -35,7 +35,7 @@ def save_shift_to_json(user_id, start_time, end_time, duration_str):
 is_working = False
 shift_start_time = None
 
-bot = telebot.TeleBot('TOKEN')
+bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
