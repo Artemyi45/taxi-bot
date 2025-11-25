@@ -136,6 +136,7 @@ def download_json(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
+    print(f"🔍 Получено сообщение: '{message.text}' от пользователя {message.from_user.id}")
     global is_working, shift_start_time, is_paused, pause_start_time
     
     if message.text == 'В бой! Начать смену':
