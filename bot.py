@@ -8,16 +8,16 @@ import pytz
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 def get_moscow_time():
-    """Возвращает текущее время в московском поясе"""
     return datetime.datetime.now(MOSCOW_TZ)
 
 is_working = False
 shift_start_time = None
+is_paused = False
+pause_start_time = None
 
 bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 def save_shift_to_json(user_id, start_time, end_time, duration_str):
-    """Сохраняет данные о смене в JSON файл"""
     
     # Создаём данные для сохранения
     shift_data = {
@@ -48,12 +48,13 @@ def save_shift_to_json(user_id, start_time, end_time, duration_str):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    button_start = types.KeyboardButton('Начать смену')
+    button_start = types.KeyboardButton('В бой! Начать смену')
+    button_pause = type.KeyboardButton('Пауза/Продолжить')
     button_end = types.KeyboardButton('Завершить смену')
-    markup.add(button_start, button_end)
+    markup.add(button_start, button_pause, button_end)
 
     bot.send_message(message.chat.id,
-                     'Выбери действие:',
+                     'Что делаем? Воин:',
                      reply_markup=markup)
     
 
@@ -89,7 +90,7 @@ def download_json(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
-    global is_working, shift_start_time
+    global is_working, shift_start_time, is_paused, pause_tart_time
     
     if message.text == 'Начать смену':
         if not is_working:
@@ -99,6 +100,26 @@ def handle_buttons(message):
         else:
             bot.send_message(message.chat.id, "Смена уже начата!")
     
+    elif message.text == 'Пауза/Продолжить':
+        if is_working and not is_paused:
+            # Ставим на паузу
+            is_paused = True
+            pause_start_time = get_moscow_time()
+            bot.send_message(message.chat.id, "⏸ Смена на паузе")
+        
+    elif is_working and is_paused:
+        # Продолжаем смену
+        is_paused = False
+        # КОРРЕКТИРУЕМ время начала смены на время паузы
+        pause_duration = get_moscow_time() - pause_start_time
+        shift_start_time += pause_duration
+        bot.send_message(message.chat.id, "▶ Смена продолжена")
+        
+    else:
+        bot.send_message(message.chat.id, "❌ Смена не начата")
+
+
+
     elif message.text == 'Завершить смену':
         if is_working:
             # Считаем разницу времени
