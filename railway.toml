@@ -1,5 +1,0 @@
-[service]
-run = "python web_admin.py"
-
-[service.env]
-PORT = "5000"
