@@ -92,5 +92,36 @@ def handle_buttons(message):
         else:
             bot.send_message(message.chat.id, "Смена не начата!")
 
+
+@bot.message_handler(commands=['download'])
+def download_json(message):
+    """Отправляет файл shifts.json пользователю"""
+    try:
+        # Проверяем существует ли файл
+        if not os.path.exists('shifts.json'):
+            bot.reply_to(message, "📭 Файл shifts.json пока не создан")
+            return
+        
+        # Читаем файл
+        with open('shifts.json', 'r', encoding='utf-8') as f:
+            json_data = f.read()
+        
+        # Создаём временный файл для отправки
+        with open('temp_shifts.json', 'w', encoding='utf-8') as f:
+            f.write(json_data)
+        
+        # Отправляем файл
+        with open('temp_shifts.json', 'rb') as f:
+            bot.send_document(message.chat.id, f, caption="📊 Данные ваших смен")
+        
+        # Удаляем временный файл
+        os.remove('temp_shifts.json')
+        
+        print(f"✅ Файл отправлен пользователю {message.from_user.id}")
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка при отправке файла: {e}")
+        print(f"❌ Ошибка: {e}")
+
 print("✅ Бот запущен с сохранением в JSON!")
 bot.polling()
