@@ -37,10 +37,18 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
     return datetime.datetime.now(MOSCOW_TZ)
 
-is_working = False
-shift_start_time = None
-is_paused = False
-pause_start_time = None
+user_states = {}
+
+def get_user_state(user_id):
+    """Возвращает состояние пользователя, создаёт если нет"""
+    if user_id not in user_states:
+        user_states[user_id] = {
+            'is_working': False,
+            'shift_start_time': None,
+            'is_paused': False, 
+            'pause_start_time': None
+        }
+    return user_states[user_id]
 
 bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
@@ -72,19 +80,20 @@ def save_shift_to_json(user_id, start_time, end_time, duration_str):
     print(f"✅ Смена сохранена в JSON для пользователя {user_id}")
 
 
-def send_motivation(chat_id):
-    """Отправляет случайное мотивационное сообщение через 30 секунд"""
+def send_motivation(chat_id, user_id):
+    """Отправляет случайное мотивационное сообщение через 3 секунды"""
     import threading
     import time
     
     def motivation_timer():
-        time.sleep(3)  # Ждём 30 секунд
+        time.sleep(3)  # Ждём 3 секунды
         
-        # Проверяем что смена ещё активна и не на паузе
-        if is_working and not is_paused:
+        # Проверяем состояние КОНКРЕТНОГО пользователя
+        state = get_user_state(user_id)
+        if state['is_working'] and not state['is_paused']:
             message = random.choice(motivational_messages)
             bot.send_message(chat_id, message)
-            print(f"✅ Мотивация отправлена пользователю {chat_id}")
+            print(f"✅ Мотивация отправлена пользователю {user_id}")
     
     # Запускаем таймер в отдельном потоке
     timer_thread = threading.Thread(target=motivation_timer)
@@ -136,42 +145,43 @@ def download_json(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
-    print(f"🔍 Получено сообщение: '{message.text}' от пользователя {message.from_user.id}")
-    global is_working, shift_start_time, is_paused, pause_start_time
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    
+    print(f"🔍 Получено сообщение: '{message.text}' от пользователя {user_id}")
     
     if message.text == 'В бой! Начать смену':
-        if not is_working:
-            is_working = True
-            shift_start_time = get_moscow_time()
+        if not state['is_working']:
+            state['is_working'] = True
+            state['shift_start_time'] = get_moscow_time()
             bot.send_message(message.chat.id, "Смена начата! 🚕")
-            # ЗАПУСКАЕМ ТАЙМЕР МОТИВАЦИИ - добавляем эту строку
-            send_motivation(message.chat.id)
+            send_motivation(message.chat.id, user_id)
         else:
             bot.send_message(message.chat.id, "Смена уже начата!")
     
     elif message.text == 'Пауза/Продолжить':
-        if is_working and not is_paused:
+        if state['is_working'] and not state['is_paused']:
             # Ставим на паузу
-            is_paused = True
-            pause_start_time = get_moscow_time()
+            state['is_paused'] = True
+            state['pause_start_time'] = get_moscow_time()
             bot.send_message(message.chat.id, "⏸ Смена на паузе")
             
-        elif is_working and is_paused:
+        elif state['is_working'] and state['is_paused']:
             # Продолжаем смену
-            is_paused = False
+            state['is_paused'] = False
             # КОРРЕКТИРУЕМ время начала смены на время паузы
-            pause_duration = get_moscow_time() - pause_start_time
-            shift_start_time += pause_duration
+            pause_duration = get_moscow_time() - state['pause_start_time']
+            state['shift_start_time'] += pause_duration
             bot.send_message(message.chat.id, "▶ Смена продолжена")
             
         else:
             bot.send_message(message.chat.id, "❌ Смена не начата")
 
     elif message.text == 'Завершить смену':
-        if is_working:
+        if state['is_working']:
             # Считаем разницу времени
             end_time = get_moscow_time()
-            work_duration = end_time - shift_start_time
+            work_duration = end_time - state['shift_start_time']
             total_seconds = work_duration.total_seconds()
             
             # Переводим в часы и минуты
@@ -187,13 +197,13 @@ def handle_buttons(message):
                 time_str = f"{minutes} мин"
             
             # СОХРАНЯЕМ В JSON
-            save_shift_to_json(message.from_user.id, shift_start_time, end_time, time_str)
+            save_shift_to_json(user_id, state['shift_start_time'], end_time, time_str)
             
             # Сбрасываем состояние
-            is_working = False
-            shift_start_time = None
-            is_paused = False
-            pause_start_time = None
+            state['is_working'] = False
+            state['shift_start_time'] = None
+            state['is_paused'] = False
+            state['pause_start_time'] = None
             
             bot.send_message(message.chat.id, 
                            f"Смена завершена! ✅\n"
