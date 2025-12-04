@@ -1,12 +1,43 @@
 import telebot
 from telebot import types
 import datetime
-import json
 import os
 import pytz
 import random
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-import random
+def init_database():
+    """Создаёт таблицы если их нет"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS shifts (
+            id SERIAL PRIMARY KEY,
+            driver_id BIGINT NOT NULL,
+            start_time TIMESTAMP NOT NULL,
+            end_time TIMESTAMP NOT NULL,
+            duration_text VARCHAR(50),
+            duration_seconds INTEGER,
+            cash INTEGER NOT NULL CHECK (cash >= 0),
+            hourly_rate INTEGER CHECK (hourly_rate >= 0),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cur.execute('''
+        CREATE INDEX IF NOT EXISTS idx_shifts_driver_id 
+        ON shifts(driver_id)
+    ''')
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("✅ База данных инициализирована")
+
+# Инициализируем БД при старте
+init_database()
 
 motivational_messages = [
     "Воин, 30 секунд в строю! Ты — повелитель асфальта и король маршрутов! 👑",
@@ -21,7 +52,7 @@ motivational_messages = [
     "Дорога — это жизнь. Ты не просто едешь — ты живёшь! 🌅",
     "30 секунд назад ты принял решение изменить свой день. Горжусь тобой! 🤝",
     "Каждый поворот руля — это новый поворот судьбы! 🌀",
-    "Ты справился с самым сложным — началом! Теперь всё пойдет как по маслу! 🛢️",
+    "Ты справился с самым сложным — началом! Теперь всё пойдет как по масу! 🛢️",
     "30 секунд — и ты уже победил свою лень! Это достойно уважения! 🏆",
     "Помни: даже самые длинные маршруты начинаются с первого метра! 🛣️",
     "30 секунд — первая ступень к финансовой свободе! 🤑",
@@ -52,35 +83,42 @@ def get_user_state(user_id):
         }
     return user_states[user_id]
 
+def save_shift_to_db(user_id, start_time, end_time, duration_str, cash, hourly_rate):
+    """Сохраняет смену в PostgreSQL"""
+    # Вычисляем duration_seconds
+    duration_seconds = int((end_time - start_time).total_seconds())
+    
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    
+    cur.execute('''
+        INSERT INTO shifts 
+        (driver_id, start_time, end_time, duration_text, duration_seconds, cash, hourly_rate)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ''', (user_id, start_time, end_time, duration_str, duration_seconds, cash, hourly_rate))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"✅ Смена сохранена в БД для пользователя {user_id}")
 
-def save_shift_to_json(user_id, start_time, end_time, duration_str, cash, hourly_rate = 0):
+def get_user_shifts(user_id, limit=10):
+    """Возвращает последние смены пользователя"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     
-    # Создаём данные для сохранения
-    shift_data = {
-        "user_id": user_id,
-        "start_time": start_time.isoformat(),  # Преобразуем время в строку
-        "end_time": end_time.isoformat(),
-        "duration": duration_str,
-        "date": get_moscow_time().strftime("%Y-%m-%d"),
-        "cash": cash
-    }
+    cur.execute('''
+        SELECT start_time, duration_text, cash, hourly_rate
+        FROM shifts 
+        WHERE driver_id = %s 
+        ORDER BY start_time DESC 
+        LIMIT %s
+    ''', (user_id, limit))
     
-    # Читаем существующие данные или создаём новые
-    try:
-        with open('shifts.json', 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        data = {"shifts": []}  # Создаём структуру если файла нет
-    
-    # Добавляем новую смену
-    data["shifts"].append(shift_data)
-    
-    # Сохраняем обратно в файл
-    with open('shifts.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    
-    print(f"✅ Смена сохранена в JSON для пользователя {user_id}")
-
+    shifts = cur.fetchall()
+    cur.close()
+    conn.close()
+    return shifts
 
 def send_motivation(chat_id, user_id):
     """Отправляет случайное мотивационное сообщение через 3 секунды"""
@@ -108,43 +146,12 @@ def send_welcome(message):
     button_start = types.KeyboardButton('В бой! Начать смену')
     button_pause = types.KeyboardButton('Пауза/Продолжить')
     button_end = types.KeyboardButton('Завершить смену')
-    markup.add(button_start, button_pause, button_end)
+    button_history = types.KeyboardButton('📊 Мои смены')
+    markup.add(button_start, button_pause, button_end, button_history)
 
     bot.send_message(message.chat.id,
                      'Что делаем? Воин:',
                      reply_markup=markup)
-    
-
-@bot.message_handler(commands=['download'])
-def download_json(message):
-    """Отправляет файл shifts.json пользователю"""
-    try:
-        # Проверяем существует ли файл
-        if not os.path.exists('shifts.json'):
-            bot.reply_to(message, "📭 Файл shifts.json пока не создан")
-            return
-        
-        # Читаем файл
-        with open('shifts.json', 'r', encoding='utf-8') as f:
-            json_data = f.read()
-        
-        # Создаём временный файл для отправки
-        with open('temp_shifts.json', 'w', encoding='utf-8') as f:
-            f.write(json_data)
-        
-        # Отправляем файл
-        with open('temp_shifts.json', 'rb') as f:
-            bot.send_document(message.chat.id, f, caption="📊 Данные ваших смен")
-        
-        # Удаляем временный файл
-        os.remove('temp_shifts.json')
-        
-        print(f"✅ Файл отправлен пользователю {message.from_user.id}")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка при отправке файла: {e}")
-        print(f"❌ Ошибка: {e}")
-
 
 @bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['awaiting_cash_input'])
 def handle_cash_input(message):
@@ -161,27 +168,26 @@ def handle_cash_input(message):
         data = state['pending_shift_data']
         
         # РАСЧЁТ СРЕДНЕГО ЧАСА
-        # Получаем время смены из данных
         shift_duration = data['end_time'] - data['start_time']
         total_seconds = shift_duration.total_seconds()
-        hours_worked = total_seconds / 3600  # часы с дробной частью
+        hours_worked = total_seconds / 3600
         
         if hours_worked > 0:
             hourly_rate = cash / hours_worked
-            hourly_rate_rounded = int(hourly_rate)  # округляем до целых рублей
+            hourly_rate_rounded = int(hourly_rate)
             hourly_rate_str = f"{hourly_rate_rounded}₽/ч"
         else:
             hourly_rate_rounded = 0
             hourly_rate_str = "0₽/ч"
         
-        # Сохраняем в JSON с кассой И средним часом
-        save_shift_to_json(
+        # Сохраняем в БД
+        save_shift_to_db(
             user_id,
             data['start_time'],
             data['end_time'],
             data['duration_str'],
             cash,
-            hourly_rate_rounded  # ← ДОБАВЛЯЕМ НОВЫЙ ПАРАМЕТР
+            hourly_rate_rounded
         )
         
         # Сбрасываем состояние
@@ -200,7 +206,6 @@ def handle_cash_input(message):
                        f"📊 Средний час: {hourly_rate_str}")
         
     except ValueError:
-        # Если ввели не число
         bot.send_message(message.chat.id, 
                        "❌ Введите корректную сумму (целое число, не меньше 0)\n"
                        "💵 Введите сумму в кассе:")
@@ -224,15 +229,12 @@ def handle_buttons(message):
     
     elif message.text == 'Пауза/Продолжить':
         if state['is_working'] and not state['is_paused']:
-            # Ставим на паузу
             state['is_paused'] = True
             state['pause_start_time'] = get_moscow_time()
             bot.send_message(message.chat.id, "⏸ Смена на паузе")
             
         elif state['is_working'] and state['is_paused']:
-            # Продолжаем смену
             state['is_paused'] = False
-            # КОРРЕКТИРУЕМ время начала смены на время паузы
             pause_duration = get_moscow_time() - state['pause_start_time']
             state['shift_start_time'] += pause_duration
             bot.send_message(message.chat.id, "▶ Смена продолжена")
@@ -242,16 +244,13 @@ def handle_buttons(message):
 
     elif message.text == 'Завершить смену':
         if state['is_working']:
-            # Считаем разницу времени
             end_time = get_moscow_time()
             work_duration = end_time - state['shift_start_time']
             total_seconds = work_duration.total_seconds()
             
-            # Переводим в часы и минуты
             hours = int(total_seconds // 3600)
             minutes = int((total_seconds % 3600) // 60)
             
-            # Форматируем вывод
             if hours > 0 and minutes > 0:
                 time_str = f"{hours} ч {minutes} мин"
             elif hours > 0:
@@ -259,14 +258,12 @@ def handle_buttons(message):
             else:
                 time_str = f"{minutes} мин"
             
-            # Сохраняем временные данные смены (ЕЩЁ НЕ В JSON)
             state['pending_shift_data'] = {
                 'start_time': state['shift_start_time'],
                 'end_time': end_time,
                 'duration_str': time_str
             }
             
-            # Запрашиваем кассу
             state['awaiting_cash_input'] = True
             
             bot.send_message(message.chat.id, 
@@ -275,6 +272,30 @@ def handle_buttons(message):
             
         else:
             bot.send_message(message.chat.id, "Смена не начата!")
+    
+    elif message.text == '📊 Мои смены':
+        shifts = get_user_shifts(user_id, limit=5)
+        
+        if not shifts:
+            bot.send_message(message.chat.id, "📭 У вас пока нет завершенных смен")
+            return
+        
+        response = "📊 Ваши последние смены:\n\n"
+        
+        for shift in shifts:
+            date_str = shift['start_time'].strftime('%d.%m.%Y')
+            response += f"📅 {date_str}\n"
+            response += f"⏱ {shift['duration_text']} | 💰 {shift['cash']}₽ | 📊 {shift['hourly_rate']}₽/ч\n\n"
+        
+        # Добавляем общую статистику
+        total_cash = sum(s['cash'] for s in shifts)
+        avg_hourly = sum(s['hourly_rate'] for s in shifts) // len(shifts) if shifts else 0
+        
+        response += f"📈 Итого (последние {len(shifts)} смен):\n"
+        response += f"💰 Общая касса: {total_cash}₽\n"
+        response += f"📊 Средний час: {avg_hourly}₽/ч"
+        
+        bot.send_message(message.chat.id, response)
 
-print("✅ Бот запущен с сохранением в JSON!")
+print("✅ Бот запущен с PostgreSQL и историей смен!")
 bot.polling()
