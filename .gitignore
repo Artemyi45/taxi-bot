@@ -99,3 +99,7 @@ htmlcov/
 .tox/
 
 taxo-bot/taxo-bot/
+.env
+__pycache__/
+*.pyc
+.streamlit/
