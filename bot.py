@@ -44,18 +44,29 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
     return datetime.datetime.now(MOSCOW_TZ)
 
-def format_seconds(seconds):
-    """Переводит секунды в 'Xч Yм'"""
+def format_seconds_to_words(seconds):
+    """Переводит секунды в '8 часов 25 минут' с правильным склонением"""
     seconds = int(seconds)
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     
-    if hours > 0 and minutes > 0:
-        return f"{hours}ч {minutes}м"
-    elif hours > 0:
-        return f"{hours}ч"
+    # Склонение для часов
+    if hours == 1:
+        hours_str = "час"
+    elif 2 <= hours <= 4:
+        hours_str = "часа"
     else:
-        return f"{minutes}м"
+        hours_str = "часов"
+    
+    # Склонение для минут
+    if minutes == 1:
+        minutes_str = "минута"
+    elif 2 <= minutes <= 4:
+        minutes_str = "минуты"
+    else:
+        minutes_str = "минут"
+    
+    return f"{hours} {hours_str} {minutes} {minutes_str}"
 
 # --- Мотивационные сообщения ---
 motivational_messages = [
@@ -200,10 +211,10 @@ def handle_cash_input(message):
         if hours_worked > 0:
             hourly_rate = cash / hours_worked
             hourly_rate_rounded = int(hourly_rate)
-            hourly_rate_str = f"{hourly_rate_rounded}₽/ч"
+            hourly_rate_str = f"{hourly_rate_rounded} в час"
         else:
             hourly_rate_rounded = 0
-            hourly_rate_str = "0₽/ч"
+            hourly_rate_str = "0 в час"
         
         save_shift_to_db(
             user_id,
@@ -225,7 +236,7 @@ def handle_cash_input(message):
         bot.send_message(message.chat.id,
                        f"✅ Смена завершена!\n"
                        f"⏱ Отработано: {data['duration_str']}\n"
-                       f"💰 Касса: {cash}₽\n"
+                       f"💰 Касса: {cash} руб\n"
                        f"📊 Средний час: {hourly_rate_str}")
         
     except ValueError:
@@ -309,30 +320,25 @@ def handle_buttons(message):
         for shift in shifts:
             date_str = shift['shift_date'].strftime('%d.%m.%Y')
             
-            if shift['shifts_count'] > 1:
-                response += f"📅 {date_str} ({shift['shifts_count']} смены)\n"
-            else:
-                response += f"📅 {date_str}\n"
+            # Форматируем время
+            time_str = format_seconds_to_words(shift['total_seconds'])
             
-            duration_str = format_seconds(shift['total_seconds'])
-            response += f"⏱ {duration_str} | 💰 {shift['total_cash']}₽ | 📊 {shift['avg_hourly_rate']}₽/ч\n\n"
+            response += f"<b>{date_str}</b>\n"
+            response += f"{time_str} / {shift['total_cash']} руб / {shift['avg_hourly_rate']} в час\n\n"
         
         # Статистика за месяц
+        total_shifts = sum(s['shifts_count'] for s in shifts)
         total_cash = sum(s['total_cash'] for s in shifts)
         total_seconds = sum(s['total_seconds'] for s in shifts)
-        month_hours = total_seconds / 3600
         
-        if month_hours > 0:
-            month_avg = int(total_cash / month_hours)
-        else:
-            month_avg = 0
+        total_time_str = format_seconds_to_words(total_seconds)
         
-        response += f"📈 Итого за месяц:\n"
-        response += f"⏱ {format_seconds(total_seconds)}\n"
-        response += f"💰 {total_cash}₽\n"
-        response += f"📊 {month_avg}₽/ч"
+        response += "────────────────\n"
+        response += f"<b>Итого за месяц:</b>\n"
+        response += f"<i>{total_shifts} смены</i> / <i>{total_cash} руб</i>\n"
+        response += f"⏱ {total_time_str}"
         
-        bot.send_message(message.chat.id, response)
+        bot.send_message(message.chat.id, response, parse_mode='HTML')
 
-print("✅ Бот запущен с PostgreSQL и группировкой смен по датам!")
+print("✅ Бот запущен с PostgreSQL!")
 bot.polling()
