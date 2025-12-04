@@ -32,13 +32,13 @@ motivational_messages = [
     "Ты даришь людям не просто поездки — ты даришь время! ⏰"
 ]
 
-MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
     return datetime.datetime.now(MOSCOW_TZ)
 
 user_states = {}
-
 def get_user_state(user_id):
     """Возвращает состояние пользователя, создаёт если нет"""
     if user_id not in user_states:
@@ -46,13 +46,14 @@ def get_user_state(user_id):
             'is_working': False,
             'shift_start_time': None,
             'is_paused': False, 
-            'pause_start_time': None
+            'pause_start_time': None,
+            "awaiting_cash_input": False,
+            "pending_shift_data": None
         }
     return user_states[user_id]
 
-bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
-def save_shift_to_json(user_id, start_time, end_time, duration_str):
+def save_shift_to_json(user_id, start_time, end_time, duration_str, cash):
     
     # Создаём данные для сохранения
     shift_data = {
@@ -60,7 +61,8 @@ def save_shift_to_json(user_id, start_time, end_time, duration_str):
         "start_time": start_time.isoformat(),  # Преобразуем время в строку
         "end_time": end_time.isoformat(),
         "duration": duration_str,
-        "date": get_moscow_time().strftime("%Y-%m-%d")
+        "date": get_moscow_time().strftime("%Y-%m-%d"),
+        "cash": cash
     }
     
     # Читаем существующие данные или создаём новые
@@ -179,37 +181,92 @@ def handle_buttons(message):
 
     elif message.text == 'Завершить смену':
         if state['is_working']:
-            # Считаем разницу времени
-            end_time = get_moscow_time()
-            work_duration = end_time - state['shift_start_time']
-            total_seconds = work_duration.total_seconds()
+          # Считаем разницу времени
+          end_time = get_moscow_time()
+          work_duration = end_time - state['shift_start_time']
+          total_seconds = work_duration.total_seconds()
             
-            # Переводим в часы и минуты
-            hours = int(total_seconds // 3600)
-            minutes = int((total_seconds % 3600) // 60)
+           # Переводим в часы и минуты
+          hours = int(total_seconds // 3600)
+          minutes = int((total_seconds % 3600) // 60)
             
-            # Форматируем вывод
-            if hours > 0 and minutes > 0:
-                time_str = f"{hours} ч {minutes} мин"
-            elif hours > 0:
-                time_str = f"{hours} ч"
-            else:
-                time_str = f"{minutes} мин"
+           # Форматируем вывод
+          if hours > 0 and minutes > 0:
+              time_str = f"{hours} ч {minutes} мин"
+          elif hours > 0:
+              time_str = f"{hours} ч"
+          else:
+             time_str = f"{minutes} мин"
             
-            # СОХРАНЯЕМ В JSON
-            save_shift_to_json(user_id, state['shift_start_time'], end_time, time_str)
+          # --- ИЗМЕНЕНИЯ НАЧИНАЮТСЯ ЗДЕСЬ ---
             
-            # Сбрасываем состояние
-            state['is_working'] = False
-            state['shift_start_time'] = None
-            state['is_paused'] = False
-            state['pause_start_time'] = None
+           # Сохраняем временные данные смены (ЕЩЁ НЕ В JSON)
+          state['pending_shift_data'] = {
+              'start_time': state['shift_start_time'],
+              'end_time': end_time,
+               'duration_str': time_str
+               }
             
-            bot.send_message(message.chat.id, 
-                           f"Смена завершена! ✅\n"
-                           f"Отработано: {time_str}")
+          # Запрашиваем кассу
+          state['awaiting_cash_input'] = True
+            
+           # НЕ сбрасываем состояние пока не введена касса!
+          # Просто запрашиваем ввод
+            
+           bot.send_message(message.chat.id, 
+                         f"⏱ Отработано: {time_str}\n"
+                          "💵 Введите сумму в кассе:")
+            
+         # --- ИЗМЕНЕНИЯ ЗАКОНЧИЛИСЬ ---
+            
         else:
             bot.send_message(message.chat.id, "Смена не начата!")
+
+
+
+@bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['awaiting_cash_input'])
+def handle_cash_input(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    
+    try:
+        # Пробуем преобразовать в число
+        cash = int(message.text)
+        if cash < 0:
+            raise ValueError("Отрицательная сумма")
+        
+        # Достаём временные данные смены
+        data = state['pending_shift_data']
+        
+        # Сохраняем в JSON с кассой
+        save_shift_to_json(
+            user_id,
+            data['start_time'],
+            data['end_time'],
+            data['duration_str'],
+            cash
+        )
+        
+        # Сбрасываем состояние
+        state['is_working'] = False
+        state['shift_start_time'] = None
+        state['is_paused'] = False
+        state['pause_start_time'] = None
+        state['awaiting_cash_input'] = False
+        state['pending_shift_data'] = None
+        
+        # Сообщаем об успехе
+        bot.send_message(message.chat.id,
+                       f"✅ Смена завершена!\n"
+                       f"⏱ Отработано: {data['duration_str']}\n"
+                       f"💰 Касса: {cash}₽")
+        
+    except ValueError:
+        # Если ввели не число
+        bot.send_message(message.chat.id, 
+                       "❌ Введите корректную сумму (целое число, не меньше 0)\n"
+                       "💵 Введите сумму в кассе:")
+        return
 
 print("✅ Бот запущен с сохранением в JSON!")
 bot.polling()
