@@ -5,7 +5,95 @@
 
 # Системные файлы Mac
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
 # Файлы Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Кэш пипа
+pip-wheel-metadata/
+pip-delete-this-directory.txt
+
+# БД и дампы
+*.db
+*.sqlite3
+dump.sql
+shifts.json  # если перешли на PostgreSQL
+temp_*.json
+
+# Редакторы и IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-*
+Pipfile.lock
+
+# Окружение и настройки
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.temp
+
+# Бэкапы
+*.bak
+*~
+
+# Railway
+.railway/
+
+# Тесты
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
