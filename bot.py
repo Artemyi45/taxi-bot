@@ -145,6 +145,51 @@ def download_json(message):
         bot.reply_to(message, f"❌ Ошибка при отправке файла: {e}")
         print(f"❌ Ошибка: {e}")
 
+
+@bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['awaiting_cash_input'])
+def handle_cash_input(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    
+    try:
+        # Пробуем преобразовать в число
+        cash = int(message.text)
+        if cash < 0:
+            raise ValueError("Отрицательная сумма")
+        
+        # Достаём временные данные смены
+        data = state['pending_shift_data']
+        
+        # Сохраняем в JSON с кассой
+        save_shift_to_json(
+            user_id,
+            data['start_time'],
+            data['end_time'],
+            data['duration_str'],
+            cash
+        )
+        
+        # Сбрасываем состояние
+        state['is_working'] = False
+        state['shift_start_time'] = None
+        state['is_paused'] = False
+        state['pause_start_time'] = None
+        state['awaiting_cash_input'] = False
+        state['pending_shift_data'] = None
+        
+        # Сообщаем об успехе
+        bot.send_message(message.chat.id,
+                       f"✅ Смена завершена!\n"
+                       f"⏱ Отработано: {data['duration_str']}\n"
+                       f"💰 Касса: {cash}₽")
+        
+    except ValueError:
+        # Если ввели не число
+        bot.send_message(message.chat.id, 
+                       "❌ Введите корректную сумму (целое число, не меньше 0)\n"
+                       "💵 Введите сумму в кассе:")
+        return
+
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
     user_id = message.from_user.id
@@ -214,52 +259,6 @@ def handle_buttons(message):
             
         else:
             bot.send_message(message.chat.id, "Смена не начата!")
-
-
-
-@bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['awaiting_cash_input'])
-def handle_cash_input(message):
-    user_id = message.from_user.id
-    state = get_user_state(user_id)
-    
-    try:
-        # Пробуем преобразовать в число
-        cash = int(message.text)
-        if cash < 0:
-            raise ValueError("Отрицательная сумма")
-        
-        # Достаём временные данные смены
-        data = state['pending_shift_data']
-        
-        # Сохраняем в JSON с кассой
-        save_shift_to_json(
-            user_id,
-            data['start_time'],
-            data['end_time'],
-            data['duration_str'],
-            cash
-        )
-        
-        # Сбрасываем состояние
-        state['is_working'] = False
-        state['shift_start_time'] = None
-        state['is_paused'] = False
-        state['pause_start_time'] = None
-        state['awaiting_cash_input'] = False
-        state['pending_shift_data'] = None
-        
-        # Сообщаем об успехе
-        bot.send_message(message.chat.id,
-                       f"✅ Смена завершена!\n"
-                       f"⏱ Отработано: {data['duration_str']}\n"
-                       f"💰 Касса: {cash}₽")
-        
-    except ValueError:
-        # Если ввели не число
-        bot.send_message(message.chat.id, 
-                       "❌ Введите корректную сумму (целое число, не меньше 0)\n"
-                       "💵 Введите сумму в кассе:")
-        return
 
 print("✅ Бот запущен с сохранением в JSON!")
 bot.polling()
