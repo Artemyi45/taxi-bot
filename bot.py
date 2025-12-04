@@ -181,43 +181,36 @@ def handle_buttons(message):
 
     elif message.text == 'Завершить смену':
         if state['is_working']:
-          # Считаем разницу времени
-          end_time = get_moscow_time()
-          work_duration = end_time - state['shift_start_time']
-          total_seconds = work_duration.total_seconds()
+            # Считаем разницу времени
+            end_time = get_moscow_time()
+            work_duration = end_time - state['shift_start_time']
+            total_seconds = work_duration.total_seconds()
             
-           # Переводим в часы и минуты
-          hours = int(total_seconds // 3600)
-          minutes = int((total_seconds % 3600) // 60)
+            # Переводим в часы и минуты
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
             
-           # Форматируем вывод
-          if hours > 0 and minutes > 0:
-              time_str = f"{hours} ч {minutes} мин"
-          elif hours > 0:
-              time_str = f"{hours} ч"
-          else:
-             time_str = f"{minutes} мин"
+            # Форматируем вывод
+            if hours > 0 and minutes > 0:
+                time_str = f"{hours} ч {minutes} мин"
+            elif hours > 0:
+                time_str = f"{hours} ч"
+            else:
+                time_str = f"{minutes} мин"
             
-          # --- ИЗМЕНЕНИЯ НАЧИНАЮТСЯ ЗДЕСЬ ---
+            # Сохраняем временные данные смены (ЕЩЁ НЕ В JSON)
+            state['pending_shift_data'] = {
+                'start_time': state['shift_start_time'],
+                'end_time': end_time,
+                'duration_str': time_str
+            }
             
-           # Сохраняем временные данные смены (ЕЩЁ НЕ В JSON)
-          state['pending_shift_data'] = {
-              'start_time': state['shift_start_time'],
-              'end_time': end_time,
-               'duration_str': time_str
-               }
+            # Запрашиваем кассу
+            state['awaiting_cash_input'] = True
             
-          # Запрашиваем кассу
-          state['awaiting_cash_input'] = True
-            
-           # НЕ сбрасываем состояние пока не введена касса!
-          # Просто запрашиваем ввод
-            
-           bot.send_message(message.chat.id, 
-                         f"⏱ Отработано: {time_str}\n"
-                          "💵 Введите сумму в кассе:")
-            
-         # --- ИЗМЕНЕНИЯ ЗАКОНЧИЛИСЬ ---
+            bot.send_message(message.chat.id, 
+                           f"⏱ Отработано: {time_str}\n"
+                           "💵 Введите сумму в кассе:")
             
         else:
             bot.send_message(message.chat.id, "Смена не начата!")
