@@ -48,13 +48,12 @@ def get_user_state(user_id):
             'is_paused': False, 
             'pause_start_time': None,
             "awaiting_cash_input": False,
-            "pending_shift_data": None,
-            "hourly_rate": hourly_rate
+            "pending_shift_data": None
         }
     return user_states[user_id]
 
 
-def save_shift_to_json(user_id, start_time, end_time, duration_str, cash):
+def save_shift_to_json(user_id, start_time, end_time, duration_str, cash, hourly_rate = 0):
     
     # Создаём данные для сохранения
     shift_data = {
