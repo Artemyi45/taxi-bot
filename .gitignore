@@ -97,3 +97,5 @@ dmypy.json
 htmlcov/
 .pytest_cache/
 .tox/
+
+taxo-bot/taxo-bot/
