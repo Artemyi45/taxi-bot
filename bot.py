@@ -48,7 +48,8 @@ def get_user_state(user_id):
             'is_paused': False, 
             'pause_start_time': None,
             "awaiting_cash_input": False,
-            "pending_shift_data": None
+            "pending_shift_data": None,
+            "hourly_rate": hourly_rate
         }
     return user_states[user_id]
 
@@ -160,13 +161,28 @@ def handle_cash_input(message):
         # Достаём временные данные смены
         data = state['pending_shift_data']
         
-        # Сохраняем в JSON с кассой
+        # РАСЧЁТ СРЕДНЕГО ЧАСА
+        # Получаем время смены из данных
+        shift_duration = data['end_time'] - data['start_time']
+        total_seconds = shift_duration.total_seconds()
+        hours_worked = total_seconds / 3600  # часы с дробной частью
+        
+        if hours_worked > 0:
+            hourly_rate = cash / hours_worked
+            hourly_rate_rounded = int(hourly_rate)  # округляем до целых рублей
+            hourly_rate_str = f"{hourly_rate_rounded}₽/ч"
+        else:
+            hourly_rate_rounded = 0
+            hourly_rate_str = "0₽/ч"
+        
+        # Сохраняем в JSON с кассой И средним часом
         save_shift_to_json(
             user_id,
             data['start_time'],
             data['end_time'],
             data['duration_str'],
-            cash
+            cash,
+            hourly_rate_rounded  # ← ДОБАВЛЯЕМ НОВЫЙ ПАРАМЕТР
         )
         
         # Сбрасываем состояние
@@ -181,7 +197,8 @@ def handle_cash_input(message):
         bot.send_message(message.chat.id,
                        f"✅ Смена завершена!\n"
                        f"⏱ Отработано: {data['duration_str']}\n"
-                       f"💰 Касса: {cash}₽")
+                       f"💰 Касса: {cash}₽\n"
+                       f"📊 Средний час: {hourly_rate_str}")
         
     except ValueError:
         # Если ввели не число
