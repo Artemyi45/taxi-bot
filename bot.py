@@ -7,6 +7,7 @@ import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+# --- Инициализация БД ---
 def init_database():
     """Создаёт таблицы если их нет"""
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -36,9 +37,27 @@ def init_database():
     conn.close()
     print("✅ База данных инициализирована")
 
-# Инициализируем БД при старте
 init_database()
 
+# --- Константы и утилиты ---
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+def get_moscow_time():
+    return datetime.datetime.now(MOSCOW_TZ)
+
+def format_seconds(seconds):
+    """Переводит секунды в 'Xч Yм'"""
+    seconds = int(seconds)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    
+    if hours > 0 and minutes > 0:
+        return f"{hours}ч {minutes}м"
+    elif hours > 0:
+        return f"{hours}ч"
+    else:
+        return f"{minutes}м"
+
+# --- Мотивационные сообщения ---
 motivational_messages = [
     "Воин, 30 секунд в строю! Ты — повелитель асфальта и король маршрутов! 👑",
     "30 секунд — и ты уже непобедим! Дорога боится сильных! ⚔️",
@@ -52,7 +71,7 @@ motivational_messages = [
     "Дорога — это жизнь. Ты не просто едешь — ты живёшь! 🌅",
     "30 секунд назад ты принял решение изменить свой день. Горжусь тобой! 🤝",
     "Каждый поворот руля — это новый поворот судьбы! 🌀",
-    "Ты справился с самым сложным — началом! Теперь всё пойдет как по масу! 🛢️",
+    "Ты справился с самым сложным — началом! Теперь всё пойдет как по маслу! 🛢️",
     "30 секунд — и ты уже победил свою лень! Это достойно уважения! 🏆",
     "Помни: даже самые длинные маршруты начинаются с первого метра! 🛣️",
     "30 секунд — первая ступень к финансовой свободе! 🤑",
@@ -65,10 +84,7 @@ motivational_messages = [
 
 bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
-MOSCOW_TZ = pytz.timezone('Europe/Moscow')
-def get_moscow_time():
-    return datetime.datetime.now(MOSCOW_TZ)
-
+# --- Состояния пользователей ---
 user_states = {}
 def get_user_state(user_id):
     """Возвращает состояние пользователя, создаёт если нет"""
@@ -83,9 +99,9 @@ def get_user_state(user_id):
         }
     return user_states[user_id]
 
+# --- Работа с БД ---
 def save_shift_to_db(user_id, start_time, end_time, duration_str, cash, hourly_rate):
     """Сохраняет смену в PostgreSQL"""
-    # Вычисляем duration_seconds
     duration_seconds = int((end_time - start_time).total_seconds())
     
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -102,44 +118,59 @@ def save_shift_to_db(user_id, start_time, end_time, duration_str, cash, hourly_r
     conn.close()
     print(f"✅ Смена сохранена в БД для пользователя {user_id}")
 
-def get_user_shifts(user_id, limit=10):
-    """Возвращает последние смены пользователя"""
+def get_user_shifts_grouped_by_date(user_id):
+    """Возвращает смены пользователя сгруппированные по дате (текущий месяц)"""
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     cur = conn.cursor(cursor_factory=RealDictCursor)
     
+    # Текущий месяц по московскому времени
+    now_moscow = datetime.datetime.now(MOSCOW_TZ)
+    month_start = now_moscow.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_end = (month_start + datetime.timedelta(days=32)).replace(day=1)
+    
     cur.execute('''
-        SELECT start_time, duration_text, cash, hourly_rate
+        SELECT 
+            DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') as shift_date,
+            COUNT(*) as shifts_count,
+            SUM(duration_seconds) as total_seconds,
+            SUM(cash) as total_cash,
+            CASE 
+                WHEN SUM(duration_seconds) > 0 
+                THEN (SUM(cash) / (SUM(duration_seconds) / 3600.0))::INTEGER
+                ELSE 0
+            END as avg_hourly_rate
         FROM shifts 
         WHERE driver_id = %s 
-        ORDER BY start_time DESC 
-        LIMIT %s
-    ''', (user_id, limit))
+          AND start_time >= %s
+          AND start_time < %s
+        GROUP BY DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow')
+        ORDER BY shift_date DESC
+    ''', (user_id, month_start, month_end))
     
     shifts = cur.fetchall()
     cur.close()
     conn.close()
     return shifts
 
+# --- Мотивация ---
 def send_motivation(chat_id, user_id):
     """Отправляет случайное мотивационное сообщение через 3 секунды"""
     import threading
     import time
     
     def motivation_timer():
-        time.sleep(3)  # Ждём 3 секунды
-        
-        # Проверяем состояние КОНКРЕТНОГО пользователя
+        time.sleep(3)
         state = get_user_state(user_id)
         if state['is_working'] and not state['is_paused']:
             message = random.choice(motivational_messages)
             bot.send_message(chat_id, message)
             print(f"✅ Мотивация отправлена пользователю {user_id}")
     
-    # Запускаем таймер в отдельном потоке
     timer_thread = threading.Thread(target=motivation_timer)
     timer_thread.daemon = True
     timer_thread.start()
 
+# --- Команды бота ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -149,9 +180,7 @@ def send_welcome(message):
     button_history = types.KeyboardButton('📊 Мои смены')
     markup.add(button_start, button_pause, button_end, button_history)
 
-    bot.send_message(message.chat.id,
-                     'Что делаем? Воин:',
-                     reply_markup=markup)
+    bot.send_message(message.chat.id, 'Что делаем? Воин:', reply_markup=markup)
 
 @bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['awaiting_cash_input'])
 def handle_cash_input(message):
@@ -159,15 +188,11 @@ def handle_cash_input(message):
     state = get_user_state(user_id)
     
     try:
-        # Пробуем преобразовать в число
         cash = int(message.text)
         if cash < 0:
             raise ValueError("Отрицательная сумма")
         
-        # Достаём временные данные смены
         data = state['pending_shift_data']
-        
-        # РАСЧЁТ СРЕДНЕГО ЧАСА
         shift_duration = data['end_time'] - data['start_time']
         total_seconds = shift_duration.total_seconds()
         hours_worked = total_seconds / 3600
@@ -180,7 +205,6 @@ def handle_cash_input(message):
             hourly_rate_rounded = 0
             hourly_rate_str = "0₽/ч"
         
-        # Сохраняем в БД
         save_shift_to_db(
             user_id,
             data['start_time'],
@@ -198,7 +222,6 @@ def handle_cash_input(message):
         state['awaiting_cash_input'] = False
         state['pending_shift_data'] = None
         
-        # Сообщаем об успехе
         bot.send_message(message.chat.id,
                        f"✅ Смена завершена!\n"
                        f"⏱ Отработано: {data['duration_str']}\n"
@@ -274,28 +297,42 @@ def handle_buttons(message):
             bot.send_message(message.chat.id, "Смена не начата!")
     
     elif message.text == '📊 Мои смены':
-        shifts = get_user_shifts(user_id, limit=5)
+        shifts = get_user_shifts_grouped_by_date(user_id)
         
         if not shifts:
-            bot.send_message(message.chat.id, "📭 У вас пока нет завершенных смен")
+            month_name = datetime.datetime.now(MOSCOW_TZ).strftime('%B').lower()
+            bot.send_message(message.chat.id, f"📭 В {month_name} пока нет завершенных смен")
             return
         
-        response = "📊 Ваши последние смены:\n\n"
+        response = "📊 Ваши смены в этом месяце:\n\n"
         
         for shift in shifts:
-            date_str = shift['start_time'].strftime('%d.%m.%Y')
-            response += f"📅 {date_str}\n"
-            response += f"⏱ {shift['duration_text']} | 💰 {shift['cash']}₽ | 📊 {shift['hourly_rate']}₽/ч\n\n"
+            date_str = shift['shift_date'].strftime('%d.%m.%Y')
+            
+            if shift['shifts_count'] > 1:
+                response += f"📅 {date_str} ({shift['shifts_count']} смены)\n"
+            else:
+                response += f"📅 {date_str}\n"
+            
+            duration_str = format_seconds(shift['total_seconds'])
+            response += f"⏱ {duration_str} | 💰 {shift['total_cash']}₽ | 📊 {shift['avg_hourly_rate']}₽/ч\n\n"
         
-        # Добавляем общую статистику
-        total_cash = sum(s['cash'] for s in shifts)
-        avg_hourly = sum(s['hourly_rate'] for s in shifts) // len(shifts) if shifts else 0
+        # Статистика за месяц
+        total_cash = sum(s['total_cash'] for s in shifts)
+        total_seconds = sum(s['total_seconds'] for s in shifts)
+        month_hours = total_seconds / 3600
         
-        response += f"📈 Итого (последние {len(shifts)} смен):\n"
-        response += f"💰 Общая касса: {total_cash}₽\n"
-        response += f"📊 Средний час: {avg_hourly}₽/ч"
+        if month_hours > 0:
+            month_avg = int(total_cash / month_hours)
+        else:
+            month_avg = 0
+        
+        response += f"📈 Итого за месяц:\n"
+        response += f"⏱ {format_seconds(total_seconds)}\n"
+        response += f"💰 {total_cash}₽\n"
+        response += f"📊 {month_avg}₽/ч"
         
         bot.send_message(message.chat.id, response)
 
-print("✅ Бот запущен с PostgreSQL и историей смен!")
+print("✅ Бот запущен с PostgreSQL и группировкой смен по датам!")
 bot.polling()
