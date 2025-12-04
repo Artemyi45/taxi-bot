@@ -323,8 +323,8 @@ def handle_buttons(message):
             # Форматируем время
             time_str = format_seconds_to_words(shift['total_seconds'])
             
-            response += f"<b>{date_str}</b>\n"
-            response += f"{time_str} / {shift['total_cash']} руб / {shift['avg_hourly_rate']} в час\n\n"
+            response += f"📅 {date_str}\n"
+            response += f"⏱ {time_str}  |  💰 {shift['total_cash']} руб  |  📊 {shift['avg_hourly_rate']} в час\n\n"
         
         # Статистика за месяц
         total_shifts = sum(s['shifts_count'] for s in shifts)
@@ -334,11 +334,10 @@ def handle_buttons(message):
         total_time_str = format_seconds_to_words(total_seconds)
         
         response += "────────────────\n"
-        response += f"<b>Итого за месяц:</b>\n"
-        response += f"<i>{total_shifts} смены</i> / <i>{total_cash} руб</i>\n"
-        response += f"⏱ {total_time_str}"
+        response += f"📈 Итого за месяц:\n"
+        response += f"{total_shifts} смены / {total_cash} руб"
         
-        bot.send_message(message.chat.id, response, parse_mode='HTML')
+        bot.send_message(message.chat.id, response)
 
 print("✅ Бот запущен с PostgreSQL!")
 bot.polling()
