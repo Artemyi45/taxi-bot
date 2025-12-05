@@ -3,12 +3,19 @@ import os
 import subprocess
 import sys
 
-# Установим streamlit если нет
+# Установим зависимости если нет
 try:
     import streamlit
+    import pandas
+    import psycopg2
 except ImportError:
-    print("Устанавливаем streamlit...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit==1.31.0", "pandas==2.1.4", "psycopg2-binary==2.9.9"])
+    print("Устанавливаем зависимости...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements_admin.txt"])
 
-# Запускаем админку
-os.system(f"python -m streamlit run admin_panel.py --server.port={os.environ.get('PORT', '8501')}")
+# Запускаем админку напрямую
+if __name__ == "__main__":
+    port = os.environ.get("PORT", "8501")
+    os.execl(sys.executable, "python", "-m", "streamlit", "run", "admin_panel.py", 
+             "--server.port", port, 
+             "--server.address", "0.0.0.0",
+             "--browser.gatherUsageStats", "false")
