@@ -2,7 +2,7 @@ import streamlit as st
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, date, time, timedelta
 import os
 from dotenv import load_dotenv
 
@@ -53,7 +53,7 @@ def get_connection():
     """Создаёт подключение к БД"""
     return psycopg2.connect(DATABASE_URL)
 
-def search_shifts(driver_id=None, date=None, min_cash=None, max_cash=None):
+def search_shifts(driver_id=None, date_filter=None, min_cash=None, max_cash=None):
     """Поиск смен по фильтрам"""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -65,9 +65,9 @@ def search_shifts(driver_id=None, date=None, min_cash=None, max_cash=None):
         query += " AND driver_id = %s"
         params.append(driver_id)
     
-    if date:
+    if date_filter:
         query += " AND DATE(start_time) = %s"
-        params.append(date)
+        params.append(date_filter)
     
     if min_cash:
         query += " AND cash >= %s"
@@ -144,6 +144,31 @@ def save_shift_edit(shift_id, editor_id, reason, old_start, new_start, old_end, 
         cur.close()
         conn.close()
 
+# --- Вспомогательные функции ---
+def parse_datetime(dt_value):
+    """Преобразует значение даты-времени из БД в datetime объект"""
+    if isinstance(dt_value, datetime):
+        return dt_value
+    elif isinstance(dt_value, str):
+        # Пробуем разные форматы
+        formats = [
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S.%f',
+            '%Y-%m-%dT%H:%M:%S.%fZ'
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(dt_value, fmt)
+            except ValueError:
+                continue
+        # Если ни один формат не подошел, возвращаем текущее время
+        return datetime.now()
+    elif isinstance(dt_value, date):
+        return datetime.combine(dt_value, time())
+    else:
+        return datetime.now()
+
 # --- Основной интерфейс ---
 def main():
     check_auth()
@@ -172,12 +197,12 @@ def main():
         
         else:  # По фильтрам
             driver_id = st.number_input("ID водителя", min_value=1, step=1, value=638440886)
-            date = st.date_input("Дата", value=datetime.now().date())
+            date_filter = st.date_input("Дата", value=datetime.now().date())
             min_cash = st.number_input("Касса от", min_value=0, value=0)
             max_cash = st.number_input("Касса до", min_value=0, value=100000)
             
             if st.button("Найти", type="primary"):
-                shifts = search_shifts(driver_id, date, min_cash, max_cash)
+                shifts = search_shifts(driver_id, date_filter, min_cash, max_cash)
                 if shifts:
                     st.session_state.search_results = shifts
                     st.success(f"Найдено {len(shifts)} смен")
@@ -282,45 +307,78 @@ def main():
         if 'selected_shift' in st.session_state:
             shift = st.session_state.selected_shift
             
+            # Преобразуем строки времени в datetime объекты
+            start_time_obj = parse_datetime(shift['start_time'])
+            end_time_obj = parse_datetime(shift['end_time'])
+            
             st.subheader(f"Смена #{shift['id']} • Водитель {shift['driver_id']}")
             
             col1, col2 = st.columns(2)
             
             with col1:
                 st.markdown("**Текущие значения:**")
-                st.write(f"Начало: `{shift['start_time']}`")
-                st.write(f"Окончание: `{shift['end_time']}`")
+                st.write(f"Начало: `{start_time_obj.strftime('%d.%m.%Y %H:%M')}`")
+                st.write(f"Окончание: `{end_time_obj.strftime('%d.%m.%Y %H:%M')}`")
                 st.write(f"Касса: `{shift['cash']} руб`")
                 st.write(f"Средний час: `{shift['hourly_rate']} руб/ч`")
-                st.write(f"Продолжительность: `{shift['duration_text']}`")
+                if 'duration_text' in shift:
+                    st.write(f"Продолжительность: `{shift['duration_text']}`")
             
             with col2:
                 st.markdown("**Новые значения:**")
                 
-                # Поля для редактирования
-                new_start = st.datetime_input(
-                    "Новое время начала",
-                    value=shift['start_time']
-                )
+                # Поля для редактирования времени начала
+                st.markdown("**Время начала:**")
+                col_start1, col_start2 = st.columns(2)
+                with col_start1:
+                    new_start_date = st.date_input(
+                        "Дата начала",
+                        value=start_time_obj.date(),
+                        key="start_date"
+                    )
+                with col_start2:
+                    new_start_time = st.time_input(
+                        "Время начала",
+                        value=start_time_obj.time(),
+                        key="start_time"
+                    )
+                new_start = datetime.combine(new_start_date, new_start_time)
                 
-                new_end = st.datetime_input(
-                    "Новое время окончания", 
-                    value=shift['end_time']
-                )
+                # Поля для редактирования времени окончания
+                st.markdown("**Время окончания:**")
+                col_end1, col_end2 = st.columns(2)
+                with col_end1:
+                    new_end_date = st.date_input(
+                        "Дата окончания",
+                        value=end_time_obj.date(),
+                        key="end_date"
+                    )
+                with col_end2:
+                    new_end_time = st.time_input(
+                        "Время окончания",
+                        value=end_time_obj.time(),
+                        key="end_time"
+                    )
+                new_end = datetime.combine(new_end_date, new_end_time)
                 
                 new_cash = st.number_input(
                     "Новая касса (руб)",
                     min_value=0,
-                    value=shift['cash']
+                    value=shift['cash'],
+                    key="cash_input"
                 )
                 
-                reason = st.text_area("Причина изменения", placeholder="Почему вносите правки?")
+                reason = st.text_area(
+                    "Причина изменения", 
+                    placeholder="Почему вносите правки?",
+                    key="reason_input"
+                )
             
             # Кнопки действий
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                if st.button("💾 Сохранить изменения", type="primary"):
+                if st.button("💾 Сохранить изменения", type="primary", key="save_btn"):
                     if reason.strip() == "":
                         st.error("Укажите причину изменения")
                     else:
@@ -328,9 +386,9 @@ def main():
                             shift_id=shift['id'],
                             editor_id=shift['driver_id'],  # пока используем ID водителя как редактора
                             reason=reason,
-                            old_start=shift['start_time'],
+                            old_start=start_time_obj,
                             new_start=new_start,
-                            old_end=shift['end_time'],
+                            old_end=end_time_obj,
                             new_end=new_end,
                             old_cash=shift['cash'],
                             new_cash=new_cash
@@ -346,14 +404,14 @@ def main():
                             st.error(f"❌ Ошибка при сохранении: {error}")
             
             with col2:
-                if st.button("📊 Показать историю"):
+                if st.button("📊 Показать историю", key="history_btn"):
                     history = get_edit_history(shift['id'])
                     if history:
                         st.session_state.show_history = True
                         st.rerun()
             
             with col3:
-                if st.button("❌ Отмена"):
+                if st.button("❌ Отмена", key="cancel_btn"):
                     if 'selected_shift' in st.session_state:
                         del st.session_state.selected_shift
                     st.rerun()
@@ -390,12 +448,12 @@ def main():
                 )
                 
                 # Кнопка возврата
-                if st.button("← Назад к редактированию"):
+                if st.button("← Назад к редактированию", key="back_btn"):
                     del st.session_state.show_history
                     st.rerun()
             else:
                 st.info("Нет истории изменений для этой смены")
-                if st.button("← Назад"):
+                if st.button("← Назад", key="back2_btn"):
                     del st.session_state.show_history
                     st.rerun()
         else:
