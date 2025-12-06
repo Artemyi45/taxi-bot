@@ -3,7 +3,6 @@ from telebot import types
 import datetime
 import os
 import pytz
-import time
 import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -107,18 +106,6 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
     return datetime.datetime.now(MOSCOW_TZ)
 
-def ensure_timezone_aware(dt, timezone=MOSCOW_TZ):
-    """Гарантирует, что datetime имеет часовой пояс"""
-    if dt.tzinfo is None:
-        return timezone.localize(dt)
-    return dt
-
-def ensure_timezone_naive(dt):
-    """Гарантирует, что datetime не имеет часового пояса"""
-    if dt.tzinfo is not None:
-        return dt.astimezone(pytz.UTC).replace(tzinfo=None)
-    return dt
-
 def format_seconds_to_words(seconds):
     """Переводит секунды в '8 часов 25 минут' с правильным склонением"""
     seconds = int(seconds)
@@ -143,6 +130,23 @@ def format_seconds_to_words(seconds):
     
     return f"{hours} {hours_str} {minutes} {minutes_str}"
 
+def ensure_timezone_aware(dt, timezone=MOSCOW_TZ):
+    """Гарантирует, что datetime имеет часовой пояс"""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return timezone.localize(dt)
+    return dt.astimezone(timezone)
+
+def ensure_timezone_naive(dt):
+    """Гарантирует, что datetime не имеет часового пояса (для БД)"""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(pytz.UTC).replace(tzinfo=None)
+    return dt
+
+# --- Мотивационные сообщения ---
 motivational_messages = [
     "Воин, 30 секунд в строю! Ты — повелитель асфальта и король маршрутов! 👑",
     "30 секунд — и ты уже непобедим! Дорога боится сильных! ⚔️",
@@ -171,6 +175,59 @@ bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 # --- Состояния пользователей ---
 user_states = {}
+
+def get_active_shift(user_id):
+    """Получает активную смену пользователя из БД"""
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Сначала проверяем есть ли поле is_active в таблице
+        cur.execute('''
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='shifts' AND column_name='is_active'
+        ''')
+        
+        has_is_active = cur.fetchone()
+        
+        if not has_is_active:
+            print(f"⚠️ Поле is_active отсутствует в таблице для пользователя {user_id}")
+            cur.close()
+            conn.close()
+            return None
+        
+        # Проверяем есть ли активные смены у пользователя
+        cur.execute('''
+            SELECT * FROM shifts 
+            WHERE driver_id = %s 
+              AND is_active = TRUE 
+            ORDER BY start_time DESC 
+            LIMIT 1
+        ''', (user_id,))
+        
+        shift = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if shift:
+            print(f"✅ Найдена активная смена в БД для пользователя {user_id}")
+            print(f"   ID смены: {shift['id']}")
+            print(f"   Начало: {shift['start_time']}")
+            print(f"   Пауза: {'Да' if shift['is_paused'] else 'Нет'}")
+            return shift
+        else:
+            print(f"📭 Нет активных смен в БД для пользователя {user_id}")
+            return None
+            
+    except psycopg2.Error as e:
+        print(f"❌ Ошибка PostgreSQL при получении активной смены: {e}")
+        return None
+    except Exception as e:
+        print(f"❌ Неожиданная ошибка при получении активной смены: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def get_user_state(user_id):
     """Возвращает состояние пользователя, создаёт если нет. Восстанавливает из БД если есть активная смена."""
@@ -384,59 +441,6 @@ def get_user_shifts_grouped_by_date(user_id):
     conn.close()
     return shifts
 
-def get_active_shift(user_id):
-    """Получает активную смену пользователя из БД"""
-    try:
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Сначала проверяем есть ли поле is_active в таблице
-        cur.execute('''
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name='shifts' AND column_name='is_active'
-        ''')
-        
-        has_is_active = cur.fetchone()
-        
-        if not has_is_active:
-            print(f"⚠️ Поле is_active отсутствует в таблице для пользователя {user_id}")
-            cur.close()
-            conn.close()
-            return None
-        
-        # Проверяем есть ли активные смены у пользователя
-        cur.execute('''
-            SELECT * FROM shifts 
-            WHERE driver_id = %s 
-              AND is_active = TRUE 
-            ORDER BY start_time DESC 
-            LIMIT 1
-        ''', (user_id,))
-        
-        shift = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if shift:
-            print(f"✅ Найдена активная смена в БД для пользователя {user_id}")
-            print(f"   ID смены: {shift['id']}")
-            print(f"   Начало: {shift['start_time']}")
-            print(f"   Пауза: {'Да' if shift['is_paused'] else 'Нет'}")
-            return shift
-        else:
-            print(f"📭 Нет активных смен в БД для пользователя {user_id}")
-            return None
-            
-    except psycopg2.Error as e:
-        print(f"❌ Ошибка PostgreSQL при получении активной смены: {e}")
-        return None
-    except Exception as e:
-        print(f"❌ Неожиданная ошибка при получении активной смены: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
 def start_shift_in_db(user_id, start_time):
     """Создает новую активную смену в БД"""
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -608,7 +612,6 @@ def cleanup_old_states():
         
     except Exception as e:
         print(f"⚠️ Ошибка при очистке старых состояний: {e}")
-        # Не падаем, продолжаем работу
 
 # --- Мотивация ---
 def send_motivation(chat_id, user_id):
@@ -743,13 +746,35 @@ def handle_cash_input(message):
         traceback.print_exc()
         bot.send_message(message.chat.id, "⚠️ Произошла ошибка. Попробуйте еще раз.")
 
-
+@bot.message_handler(func=lambda message: True)
+def handle_buttons(message):
     try:
         user_id = message.from_user.id
         print(f"🔍 Обрабатываем сообщение от пользователя {user_id}: '{message.text}'")
         
         state = get_user_state(user_id)
         print(f"📊 Состояние пользователя: is_working={state.get('is_working')}")
+        
+        # Если смена активна и ожидает кассу, но нет данных - сбрасываем
+        if state.get('awaiting_cash_input') and not state.get('pending_shift_data'):
+            print(f"⚠️ Сброс состояния ожидания кассы для пользователя {user_id}")
+            state['awaiting_cash_input'] = False
+            
+            # Обновляем в БД
+            try:
+                conn = psycopg2.connect(os.environ['DATABASE_URL'])
+                cur = conn.cursor()
+                cur.execute('''
+                    UPDATE shifts 
+                    SET awaiting_cash_input = FALSE
+                    WHERE driver_id = %s AND is_active = TRUE
+                ''', (user_id,))
+                conn.commit()
+                cur.close()
+                conn.close()
+                print(f"✅ Сброшен awaiting_cash_input в БД")
+            except Exception as e:
+                print(f"❌ Ошибка при сбросе в БД: {e}")
         
         if message.text == 'В бой! Начать смену':
             if not state['is_working']:
@@ -894,42 +919,6 @@ def handle_cash_input(message):
         traceback.print_exc()
         bot.send_message(message.chat.id, "⚠️ Произошла ошибка. Попробуйте еще раз.")
 
-@bot.message_handler(func=lambda message: True)
-def handle_buttons(message):
-    try:
-        user_id = message.from_user.id
-        print(f"🔍 Обрабатываем сообщение от пользователя {user_id}: '{message.text}'")
-        
-        state = get_user_state(user_id)
-        print(f"📊 Состояние пользователя: is_working={state.get('is_working')}")
-        
-        # --- ВСТАВЬ ЭТОТ БЛОК СЮДА ---
-        # Если смена активна и ожидает кассу, но нет данных - сбрасываем
-        if state.get('awaiting_cash_input') and not state.get('pending_shift_data'):
-            print(f"⚠️ Сброс состояния ожидания кассы для пользователя {user_id}")
-            state['awaiting_cash_input'] = False
-            
-            # Обновляем в БД
-            try:
-                conn = psycopg2.connect(os.environ['DATABASE_URL'])
-                cur = conn.cursor()
-                cur.execute('''
-                    UPDATE shifts 
-                    SET awaiting_cash_input = FALSE
-                    WHERE driver_id = %s AND is_active = TRUE
-                ''', (user_id,))
-                conn.commit()
-                cur.close()
-                conn.close()
-                print(f"✅ Сброшен awaiting_cash_input в БД")
-            except Exception as e:
-                print(f"❌ Ошибка при сбросе в БД: {e}")
-        
-        # --- КОНЕЦ БЛОКА ---
-        
-        if message.text == 'В бой! Начать смену':
-            # ... остальной код функции без изменений ...
-
 # --- Запуск бота ---
 print("✅ Бот запущен с PostgreSQL!")
 
@@ -1001,3 +990,4 @@ while True:
         traceback.print_exc()
         print("🔄 Перезапуск через 15 секунд...")
         time.sleep(15)
+
