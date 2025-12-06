@@ -200,7 +200,21 @@ def get_user_state(user_id):
     
     # Восстанавливаем состояние из БД
     try:
-        start_time = active_shift['start_time']
+        start_time = active_shift.get('start_time')
+        if not start_time:
+            print(f"❌ Нет start_time в данных смены для пользователя {user_id}")
+            # Создаем новое состояние при ошибке данных
+            user_states[user_id] = {
+                'is_working': False,
+                'shift_start_time': None,
+                'is_paused': False, 
+                'pause_start_time': None,
+                "awaiting_cash_input": False,
+                "pending_shift_data": None,
+                'shift_id': None
+            }
+            return user_states[user_id]
+        
         if isinstance(start_time, str):
             start_time = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
         
@@ -217,7 +231,7 @@ def get_user_state(user_id):
             'is_paused': active_shift.get('is_paused', False),
             'pause_start_time': active_shift.get('pause_start_time'),
             'awaiting_cash_input': active_shift.get('awaiting_cash_input', False),
-            'pending_shift_data': None,
+            'pending_shift_data': None,  # Всегда None при восстановлении
             'shift_id': active_shift.get('id')  # сохраняем ID смены для обновлений
         }
         
@@ -226,6 +240,28 @@ def get_user_state(user_id):
         print(f"   Начало: {start_time.strftime('%d.%m.%Y %H:%M')}")
         print(f"   Пауза: {'Да' if user_states[user_id]['is_paused'] else 'Нет'}")
         print(f"   Ожидает кассу: {'Да' if user_states[user_id]['awaiting_cash_input'] else 'Нет'}")
+        
+        # --- ВАЖНОЕ ИСПРАВЛЕНИЕ: ---
+        # Если смена ожидает кассу, но у нас нет данных - сбрасываем флаг
+        if user_states[user_id]['awaiting_cash_input'] and not user_states[user_id].get('pending_shift_data'):
+            print(f"⚠️ Восстановлена смена в состоянии ожидания кассы без данных. Сбрасываем флаг.")
+            user_states[user_id]['awaiting_cash_input'] = False
+            
+            # Обновляем в БД
+            try:
+                conn = psycopg2.connect(os.environ['DATABASE_URL'])
+                cur = conn.cursor()
+                cur.execute('''
+                    UPDATE shifts 
+                    SET awaiting_cash_input = FALSE
+                    WHERE driver_id = %s AND is_active = TRUE
+                ''', (user_id,))
+                conn.commit()
+                cur.close()
+                conn.close()
+                print(f"   ✅ Сброшен awaiting_cash_input в БД")
+            except Exception as e:
+                print(f"   ❌ Ошибка при обновлении БД: {e}")
         
         # Если смена на паузе, корректируем время начала
         if user_states[user_id]['is_paused'] and active_shift.get('pause_start_time'):
@@ -258,6 +294,20 @@ def get_user_state(user_id):
     except KeyError as e:
         print(f"❌ Ошибка ключа в данных смены: {e}")
         # Создаем новое состояние при ошибке данных
+        user_states[user_id] = {
+            'is_working': False,
+            'shift_start_time': None,
+            'is_paused': False, 
+            'pause_start_time': None,
+            "awaiting_cash_input": False,
+            "pending_shift_data": None,
+            'shift_id': None
+        }
+    except Exception as e:
+        print(f"❌ Неожиданная ошибка при восстановлении состояния: {e}")
+        import traceback
+        traceback.print_exc()
+        # Создаем новое состояние при ошибке
         user_states[user_id] = {
             'is_working': False,
             'shift_start_time': None,
@@ -605,64 +655,95 @@ def send_welcome(message):
 
     bot.send_message(message.chat.id, 'Что делаем? Воин:', reply_markup=markup)
 
-@bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['awaiting_cash_input'])
+@bot.message_handler(func=lambda message: 
+    get_user_state(message.from_user.id).get('awaiting_cash_input', False) == True)
 def handle_cash_input(message):
-    user_id = message.from_user.id
-    state = get_user_state(user_id)
-    
     try:
-        cash = int(message.text)
-        if cash < 0:
-            raise ValueError("Отрицательная сумма")
+        user_id = message.from_user.id
+        print(f"💰 Обрабатываем ввод кассы от пользователя {user_id}")
+        
+        state = get_user_state(user_id)
+        print(f"📊 Состояние: awaiting_cash_input={state.get('awaiting_cash_input')}")
+        print(f"📊 pending_shift_data: {state.get('pending_shift_data')}")
+        
+        # Проверяем наличие данных
+        if not state.get('pending_shift_data'):
+            print(f"❌ Нет данных о смене для пользователя {user_id}")
+            state['awaiting_cash_input'] = False
+            bot.send_message(message.chat.id, 
+                           "❌ Ошибка: данные смены не найдены.\n"
+                           "Начните новую смену командой 'В бой! Начать смену'")
+            return
         
         data = state['pending_shift_data']
-        shift_duration = data['end_time'] - data['start_time']
-        total_seconds = shift_duration.total_seconds()
-        hours_worked = total_seconds / 3600
         
-        if hours_worked > 0:
-            hourly_rate = cash / hours_worked
-            hourly_rate_rounded = int(hourly_rate)
-            hourly_rate_str = f"{hourly_rate_rounded} в час"
-        else:
-            hourly_rate_rounded = 0
-            hourly_rate_str = "0 в час"
-        
-        # Завершаем смену в БД
-        success = complete_shift_in_db(
-            user_id,
-            data['end_time'],
-            data['duration_str'],
-            cash,
-            hourly_rate_rounded
-        )
-        
-        if success:
-            # Сбрасываем состояние
-            state['is_working'] = False
-            state['shift_start_time'] = None
-            state['is_paused'] = False
-            state['pause_start_time'] = None
+        # Проверяем наличие всех необходимых полей
+        if not data.get('start_time') or not data.get('end_time'):
+            print(f"❌ Неполные данные о смене: {data}")
             state['awaiting_cash_input'] = False
             state['pending_shift_data'] = None
-            state['shift_id'] = None
-            
-            bot.send_message(message.chat.id,
-                           f"✅ Смена завершена!\n"
-                           f"⏱ Отработано: {data['duration_str']}\n"
-                           f"💰 Касса: {cash} руб\n"
-                           f"📊 Средний час: {hourly_rate_str}")
-        else:
-            bot.send_message(message.chat.id, "❌ Ошибка при сохранении смены")
+            bot.send_message(message.chat.id, 
+                           "❌ Ошибка: неполные данные смены.\n"
+                           "Начните новую смену командой 'В бой! Начать смену'")
+            return
         
-    except ValueError:
-        bot.send_message(message.chat.id, 
-                       "❌ Введите корректную сумму (целое число, не меньше 0)\n"
-                       "💵 Введите сумму в кассе:")
-        return
+        try:
+            cash = int(message.text)
+            if cash < 0:
+                raise ValueError("Отрицательная сумма")
+            
+            shift_duration = data['end_time'] - data['start_time']
+            total_seconds = shift_duration.total_seconds()
+            hours_worked = total_seconds / 3600
+            
+            if hours_worked > 0:
+                hourly_rate = cash / hours_worked
+                hourly_rate_rounded = int(hourly_rate)
+                hourly_rate_str = f"{hourly_rate_rounded} в час"
+            else:
+                hourly_rate_rounded = 0
+                hourly_rate_str = "0 в час"
+            
+            # Завершаем смену в БД
+            success = complete_shift_in_db(
+                user_id,
+                data['end_time'],
+                data['duration_str'],
+                cash,
+                hourly_rate_rounded
+            )
+            
+            if success:
+                # Сбрасываем состояние
+                state['is_working'] = False
+                state['shift_start_time'] = None
+                state['is_paused'] = False
+                state['pause_start_time'] = None
+                state['awaiting_cash_input'] = False
+                state['pending_shift_data'] = None
+                state['shift_id'] = None
+                
+                bot.send_message(message.chat.id,
+                               f"✅ Смена завершена!\n"
+                               f"⏱ Отработано: {data['duration_str']}\n"
+                               f"💰 Касса: {cash} руб\n"
+                               f"📊 Средний час: {hourly_rate_str}")
+            else:
+                bot.send_message(message.chat.id, "❌ Ошибка при сохранении смены")
+            
+        except ValueError:
+            bot.send_message(message.chat.id, 
+                           "❌ Введите корректную сумму (целое число, не меньше 0)\n"
+                           "💵 Введите сумму в кассе:")
+            return
+            
+    except Exception as e:
+        print(f"❌ Ошибка в handle_cash_input: {e}")
+        import traceback
+        traceback.print_exc()
+        bot.send_message(message.chat.id, "⚠️ Произошла ошибка. Попробуйте еще раз.")
 
-@bot.message_handler(func=lambda message: True)
-def handle_buttons(message):
+
     try:
         user_id = message.from_user.id
         print(f"🔍 Обрабатываем сообщение от пользователя {user_id}: '{message.text}'")
@@ -812,6 +893,42 @@ def handle_buttons(message):
         import traceback
         traceback.print_exc()
         bot.send_message(message.chat.id, "⚠️ Произошла ошибка. Попробуйте еще раз.")
+
+@bot.message_handler(func=lambda message: True)
+def handle_buttons(message):
+    try:
+        user_id = message.from_user.id
+        print(f"🔍 Обрабатываем сообщение от пользователя {user_id}: '{message.text}'")
+        
+        state = get_user_state(user_id)
+        print(f"📊 Состояние пользователя: is_working={state.get('is_working')}")
+        
+        # --- ВСТАВЬ ЭТОТ БЛОК СЮДА ---
+        # Если смена активна и ожидает кассу, но нет данных - сбрасываем
+        if state.get('awaiting_cash_input') and not state.get('pending_shift_data'):
+            print(f"⚠️ Сброс состояния ожидания кассы для пользователя {user_id}")
+            state['awaiting_cash_input'] = False
+            
+            # Обновляем в БД
+            try:
+                conn = psycopg2.connect(os.environ['DATABASE_URL'])
+                cur = conn.cursor()
+                cur.execute('''
+                    UPDATE shifts 
+                    SET awaiting_cash_input = FALSE
+                    WHERE driver_id = %s AND is_active = TRUE
+                ''', (user_id,))
+                conn.commit()
+                cur.close()
+                conn.close()
+                print(f"✅ Сброшен awaiting_cash_input в БД")
+            except Exception as e:
+                print(f"❌ Ошибка при сбросе в БД: {e}")
+        
+        # --- КОНЕЦ БЛОКА ---
+        
+        if message.text == 'В бой! Начать смену':
+            # ... остальной код функции без изменений ...
 
 # --- Запуск бота ---
 print("✅ Бот запущен с PostgreSQL!")
