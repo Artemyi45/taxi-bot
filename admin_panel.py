@@ -982,19 +982,22 @@ def show_add_shift_form():
                 help="Формат: ЧЧ:ММ"
             )
         
-        # Парсим время
+        # Парсим время начала (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+        start_time_obj = None
         try:
-            if ':' in start_time_str:
-                hour, minute = map(int, start_time_str.split(':'))
-                start_time = time(hour % 24, minute % 60)
+            if start_time_str and ':' in start_time_str:
+                # Используем strptime для безопасного парсинга
+                time_obj = datetime.strptime(start_time_str, "%H:%M")
+                start_time_obj = time_obj.time()
             else:
-                start_time = datetime.time(0, 0)
-                st.warning("Используйте формат ЧЧ:ММ. Установлено 00:00")
-        except:
-            start_time = time(0, 0)
+                start_time_obj = time(0, 0)  # Используем импортированный time
+                if start_time_str:
+                    st.warning("Используйте формат ЧЧ:ММ. Установлено 00:00")
+        except ValueError:
+            start_time_obj = time(0, 0)
             st.warning("Некорректное время. Установлено 00:00")
         
-        start_datetime = datetime.combine(start_date, start_time)
+        start_datetime = datetime.combine(start_date, start_time_obj)
     
     with col2:
         cash = st.number_input(
@@ -1019,19 +1022,22 @@ def show_add_shift_form():
                 help="Формат: ЧЧ:ММ"
             )
         
-        # Парсим время
+        # Парсим время окончания (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+        end_time_obj = None
         try:
-            if ':' in end_time_str:
-                hour, minute = map(int, end_time_str.split(':'))
-                end_time = datetime.time(hour % 24, minute % 60)
+            if end_time_str and ':' in end_time_str:
+                # Используем strptime для безопасного парсинга
+                time_obj = datetime.strptime(end_time_str, "%H:%M")
+                end_time_obj = time_obj.time()
             else:
-                end_time = datetime.time(0, 0)
-                st.warning("Используйте формат ЧЧ:ММ. Установлено 00:00")
-        except:
-            end_time = datetime.time(0, 0)
+                end_time_obj = time(0, 0)  # Используем импортированный time
+                if end_time_str:
+                    st.warning("Используйте формат ЧЧ:ММ. Установлено 00:00")
+        except ValueError:
+            end_time_obj = time(0, 0)
             st.warning("Некорректное время. Установлено 00:00")
         
-        end_datetime = datetime.combine(end_date, end_time)
+        end_datetime = datetime.combine(end_date, end_time_obj)
     
     # Проверка времени
     if end_datetime <= start_datetime:
