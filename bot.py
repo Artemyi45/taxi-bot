@@ -108,6 +108,7 @@ bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 # --- Состояния пользователей ---
 def get_user_state(user_id):
+    user_states = {}
     """Возвращает состояние пользователя, создаёт если нет. Восстанавливает из БД если есть активная смена."""
     # Если уже есть в памяти - возвращаем
     if user_id in user_states:
