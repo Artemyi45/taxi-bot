@@ -218,21 +218,32 @@ def get_user_state(user_id):
 # --- Работа с БД ---
 def save_shift_to_db(user_id, start_time, end_time, duration_str, cash, hourly_rate):
     """Сохраняет смену в PostgreSQL"""
-    duration_seconds = int((end_time - start_time).total_seconds())
-    
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    cur = conn.cursor()
-    
-    cur.execute('''
-        INSERT INTO shifts 
-        (driver_id, start_time, end_time, duration_text, duration_seconds, cash, hourly_rate)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    ''', (user_id, start_time, end_time, duration_str, duration_seconds, cash, hourly_rate))
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-    print(f"✅ Смена сохранена в БД для пользователя {user_id}")
+    try:
+        # Конвертируем времена в offset-naive для БД
+        if start_time.tzinfo is not None:
+            start_time = start_time.astimezone(pytz.UTC).replace(tzinfo=None)
+        if end_time.tzinfo is not None:
+            end_time = end_time.astimezone(pytz.UTC).replace(tzinfo=None)
+        
+        duration_seconds = int((end_time - start_time).total_seconds())
+        
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        
+        cur.execute('''
+            INSERT INTO shifts 
+            (driver_id, start_time, end_time, duration_text, duration_seconds, cash, hourly_rate)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (user_id, start_time, end_time, duration_str, duration_seconds, cash, hourly_rate))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"✅ Смена сохранена в БД для пользователя {user_id}")
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении смены: {e}")
+        import traceback
+        traceback.print_exc()
 
 def get_user_shifts_grouped_by_date(user_id):
     """Возвращает смены пользователя сгруппированные по дате (текущий месяц)"""
