@@ -3,6 +3,7 @@ from telebot import types
 import datetime
 import os
 import pytz
+import time
 import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -106,6 +107,18 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
     return datetime.datetime.now(MOSCOW_TZ)
 
+def ensure_timezone_aware(dt, timezone=MOSCOW_TZ):
+    """Гарантирует, что datetime имеет часовой пояс"""
+    if dt.tzinfo is None:
+        return timezone.localize(dt)
+    return dt
+
+def ensure_timezone_naive(dt):
+    """Гарантирует, что datetime не имеет часового пояса"""
+    if dt.tzinfo is not None:
+        return dt.astimezone(pytz.UTC).replace(tzinfo=None)
+    return dt
+
 def format_seconds_to_words(seconds):
     """Переводит секунды в '8 часов 25 минут' с правильным склонением"""
     seconds = int(seconds)
@@ -130,7 +143,6 @@ def format_seconds_to_words(seconds):
     
     return f"{hours} {hours_str} {minutes} {minutes_str}"
 
-# --- Мотивационные сообщения ---
 motivational_messages = [
     "Воин, 30 секунд в строю! Ты — повелитель асфальта и король маршрутов! 👑",
     "30 секунд — и ты уже непобедим! Дорога боится сильных! ⚔️",
@@ -175,6 +187,13 @@ def get_user_state(user_id):
         if isinstance(start_time, str):
             start_time = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
         
+        # Приводим start_time к aware (с часовым поясом)
+        if start_time.tzinfo is None:
+            start_time = MOSCOW_TZ.localize(start_time)
+        else:
+            # Если уже имеет пояс, конвертируем в московский
+            start_time = start_time.astimezone(MOSCOW_TZ)
+        
         user_states[user_id] = {
             'is_working': True,
             'shift_start_time': start_time,
@@ -191,16 +210,30 @@ def get_user_state(user_id):
             if isinstance(pause_start, str):
                 pause_start = datetime.datetime.fromisoformat(pause_start.replace('Z', '+00:00'))
             
+            # Приводим pause_start к aware
+            if pause_start.tzinfo is None:
+                pause_start = MOSCOW_TZ.localize(pause_start)
+            else:
+                pause_start = pause_start.astimezone(MOSCOW_TZ)
+            
+            user_states[user_id]['pause_start_time'] = pause_start
+            
             # Учитываем уже накопленное время пауз
             total_pause_seconds = active_shift.get('pause_duration_seconds', 0)
-            if active_shift['pause_start_time']:
-                current_pause = (get_moscow_time() - pause_start).total_seconds()
-                total_pause_seconds += current_pause
+            
+            # Добавляем текущую паузу
+            current_time = get_moscow_time()
+            current_pause = (current_time - pause_start).total_seconds()
+            total_pause_seconds += current_pause
+            
+            print(f"   ⏸ Смена на паузе. Накоплено пауз: {total_pause_seconds} сек")
             
             # Сдвигаем время начала на общее время пауз
             user_states[user_id]['shift_start_time'] -= datetime.timedelta(seconds=total_pause_seconds)
         
         print(f"✅ Восстановлено состояние из БД для пользователя {user_id}")
+        print(f"   Начало: {user_states[user_id]['shift_start_time'].strftime('%d.%m.%Y %H:%M')}")
+        print(f"   Пауза: {'Да' if user_states[user_id]['is_paused'] else 'Нет'}")
     else:
         # Нет активной смены - создаем новое состояние
         user_states[user_id] = {
@@ -212,6 +245,7 @@ def get_user_state(user_id):
             "pending_shift_data": None,
             'shift_id': None
         }
+        print(f"🆕 Создано новое состояние для пользователя {user_id}")
     
     return user_states[user_id]
 
@@ -381,11 +415,32 @@ def update_shift_pause(user_id, is_paused, pause_start_time=None):
 def complete_shift_in_db(user_id, end_time, duration_str, cash, hourly_rate):
     """Завершает смену в БД"""
     try:
-        duration_seconds = int((end_time - datetime.datetime.fromisoformat(str(end_time).replace('Z', '+00:00'))).total_seconds())
+        # Конвертируем end_time в offset-naive для БД
+        end_time_naive = ensure_timezone_naive(end_time)
         
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         cur = conn.cursor()
         
+        # Сначала получаем start_time
+        cur.execute('''
+            SELECT start_time FROM shifts 
+            WHERE driver_id = %s AND is_active = TRUE
+        ''', (user_id,))
+        
+        result = cur.fetchone()
+        if not result:
+            print(f"❌ Не найдена активная смена для пользователя {user_id}")
+            cur.close()
+            conn.close()
+            return False
+        
+        start_time = result[0]
+        start_time_naive = ensure_timezone_naive(start_time) if isinstance(start_time, datetime.datetime) else start_time
+        
+        # Считаем длительность
+        duration_seconds = int((end_time_naive - start_time_naive).total_seconds())
+        
+        # Завершаем смену
         cur.execute('''
             UPDATE shifts 
             SET end_time = %s,
@@ -399,25 +454,20 @@ def complete_shift_in_db(user_id, end_time, duration_str, cash, hourly_rate):
             WHERE driver_id = %s 
               AND is_active = TRUE
             RETURNING id
-        ''', (end_time, duration_str, duration_seconds, cash, hourly_rate, user_id))
+        ''', (end_time_naive, duration_str, duration_seconds, cash, hourly_rate, user_id))
         
-        result = cur.fetchone()
+        shift_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
         
-        if result:
-            shift_id = result[0]
-            conn.commit()
-            cur.close()
-            conn.close()
-            print(f"✅ Смена #{shift_id} завершена для пользователя {user_id}")
-            return True
-        else:
-            conn.rollback()
-            cur.close()
-            conn.close()
-            print(f"❌ Не найдена активная смена для пользователя {user_id}")
-            return False
+        print(f"✅ Смена #{shift_id} завершена для пользователя {user_id}")
+        return True
+        
     except Exception as e:
         print(f"❌ Ошибка при завершении смены: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def cleanup_old_states():
@@ -749,8 +799,6 @@ try:
     
 except Exception as e:
     print(f"⚠️ Ошибка при восстановлении смен: {e}")
-
-import time
 
 while True:
     try:
