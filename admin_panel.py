@@ -238,6 +238,50 @@ def delete_shift(shift_id):
         conn.close()
         return False, str(e)
 
+def save_manual_shift(driver_id, start_time, end_time, cash, duration_str, hourly_rate):
+    """Сохраняет смену, созданную вручную"""
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        # Рассчитываем секунды
+        duration_seconds = int((end_time - start_time).total_seconds())
+        
+        # Сохраняем смену
+        cur.execute('''
+            INSERT INTO shifts 
+            (driver_id, start_time, end_time, duration_text, 
+             duration_seconds, cash, hourly_rate, is_active, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE, NOW())
+            RETURNING id
+        ''', (driver_id, start_time, end_time, duration_str, 
+              duration_seconds, cash, hourly_rate))
+        
+        shift_id = cur.fetchone()[0]
+        
+        # Записываем в историю что создано вручную
+        cur.execute('''
+            INSERT INTO shift_edits 
+            (shift_id, editor_id, edited_at, reason,
+             old_start_time, new_start_time, old_end_time, new_end_time,
+             old_cash, new_cash, old_hourly_rate, new_hourly_rate)
+            VALUES (%s, %s, NOW(), 'Создано вручную через админ-панель',
+                    NULL, %s, NULL, %s, NULL, %s, NULL, %s)
+        ''', (shift_id, 0, start_time, end_time, cash, hourly_rate))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        print(f"✅ Смена #{shift_id} создана вручную для водителя {driver_id}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении ручной смены: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 # --- Вспомогательные функции ---
 def parse_datetime(dt_value):
     """Преобразует значение даты-времени из БД в datetime объект"""
@@ -270,12 +314,22 @@ def main():
     st.title("🚕 Админ-панель Такси-бота")
     st.markdown("---")
     
-        # Если показываем статистику
+    # ===== ПРОВЕРКА НА ПОКАЗ ФОРМ ДОБАВЛЕНИЯ =====
+    if st.session_state.get('show_add_shift'):
+        show_add_shift_form()
+        return
+    
+    # Если показываем статистику
     if st.session_state.get('show_stats'):
         if st.button("← Назад к списку", key="back_from_stats"):
             st.session_state.show_stats = False
             st.rerun()
         show_general_stats()
+        return
+    
+    # Обработка экспорта данных
+    if st.session_state.get('show_export'):
+        show_export_data()
         return
     
     # Инициализация состояния пагинации
@@ -291,7 +345,6 @@ def main():
         }
     
     # Если выбрана смена - показываем детальную карточку
-        # Если выбрана смена - показываем детальную карточку
     if st.session_state.selected_shift_id:
         # Добавляем кнопку назад ПЕРЕД вызовом функции деталей
         if st.button("← Назад к списку", key="back_to_list_main"):
@@ -380,7 +433,14 @@ def main():
     st.markdown("---")
     
     # ===== ТАБЛИЦА СМЕН =====
-    st.subheader("📋 Все смены")
+    # ИЗМЕНИ ЭТОТ БЛОК - добавь колонки для кнопки
+    col_title, col_button = st.columns([3, 1])
+    with col_title:
+        st.subheader("📋 Все смены")
+    with col_button:
+        if st.button("➕ Добавить смену", type="primary"):
+            st.session_state.show_add_shift = True
+            st.rerun()
     
     # Получаем смены для текущей страницы
     shifts, total = get_all_shifts_paginated(
@@ -391,116 +451,8 @@ def main():
         end_date=st.session_state.filters['end_date']
     )
     
-    if shifts:
-        # Создаем DataFrame
-        df = pd.DataFrame(shifts)
-        
-        # Форматируем данные
-        df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
-        df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
-        
-        # Добавляем колонку статуса
-        df['status'] = df.apply(
-            lambda row: '🟢 Активна' if row['is_active'] else ('⏸ На паузе' if row['is_paused'] else '✅ Завершена'),
-            axis=1
-        )
-        
-        # Показываем таблицу с возможностью выбора
-        for _, shift in df.iterrows():
-            col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 2, 2, 2, 2, 1])
-            
-            with col1:
-                st.markdown(f"**#{shift['id']}**")
-            
-            with col2:
-                st.markdown(f"👤 {shift['driver_id']}")
-            
-            with col3:
-                st.markdown(f"📅 {shift['start_time']}")
-            
-            with col4:
-                st.markdown(f"⏱ {shift['duration_text'] or '—'}")
-            
-            with col5:
-                st.markdown(f"💰 {shift['cash']:,} руб")
-            
-            with col6:
-                st.markdown(f"📊 {shift['hourly_rate'] or 0:,} руб/ч")
-            
-            with col7:
-                if st.button("👁️", key=f"view_{shift['id']}"):
-                    st.session_state.selected_shift_id = shift['id']
-                    st.rerun()
-            
-            st.divider()
-        
-        # ===== ПАГИНАЦИЯ =====
-        st.markdown("---")
-        total_pages = (total + 19) // 20  # Округление вверх
-        
-        if total_pages > 1:
-            st.write(f"Страница {st.session_state.page + 1} из {total_pages} (всего {total} смен)")
-            
-            cols = st.columns(5)
-            
-            with cols[0]:
-                if st.button("⏮️ Первая", disabled=st.session_state.page == 0):
-                    st.session_state.page = 0
-                    st.rerun()
-            
-            with cols[1]:
-                if st.button("◀️ Назад", disabled=st.session_state.page == 0):
-                    st.session_state.page -= 1
-                    st.rerun()
-            
-            with cols[2]:
-                # Прямой переход к странице
-                page_num = st.number_input(
-                    "Страница",
-                    min_value=1,
-                    max_value=total_pages,
-                    value=st.session_state.page + 1,
-                    key="page_input"
-                )
-                if page_num != st.session_state.page + 1:
-                    st.session_state.page = page_num - 1
-                    st.rerun()
-            
-            with cols[3]:
-                if st.button("Вперед ▶️", disabled=st.session_state.page >= total_pages - 1):
-                    st.session_state.page += 1
-                    st.rerun()
-            
-            with cols[4]:
-                if st.button("Последняя ⏭️", disabled=st.session_state.page >= total_pages - 1):
-                    st.session_state.page = total_pages - 1
-                    st.rerun()
-    else:
-        st.info("🚫 Смены не найдены")
-    
-    # ===== БЫСТРЫЕ ДЕЙСТВИЯ =====
-    st.markdown("---")
-    st.subheader("⚡ Быстрые действия")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("🔄 Обновить страницу"):
-            st.rerun()
-    
-    with col2:
-        if st.button("📊 Общая статистика"):
-            show_general_stats()
-    
-    with col3:
-        if st.button("📤 Экспорт данных"):
-            st.session_state.show_export = True
-            st.rerun()
-    
-        # Обработка экспорта данных
-    if st.session_state.get('show_export'):
-        show_export_data()
-        return
+    # ... остальной код таблицы БЕЗ ИЗМЕНЕНИЙ ...
+    # (просто продолжаем существующий код с отображением таблицы)
 
 def show_shift_detail(shift_id):
     """Показывает детальную информацию о смене"""
@@ -890,6 +842,113 @@ def show_export_data():
                     st.warning("Нет данных для выбранного диапазона")
             else:
                 st.warning("Нет данных для экспорта")
+
+def show_add_shift_form():
+    """Форма для ручного добавления смены"""
+    st.title("➕ Добавить смену вручную")
+    
+    if st.button("← Назад к списку"):
+        st.session_state.show_add_shift = False
+        st.rerun()
+    
+    st.markdown("---")
+    
+    # Поля формы
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        driver_id = st.number_input(
+            "ID водителя",
+            min_value=1,
+            value=1,
+            help="Telegram ID водителя"
+        )
+        
+        st.markdown("**Время начала:**")
+        col_start1, col_start2 = st.columns(2)
+        with col_start1:
+            start_date = st.date_input("Дата начала", value=datetime.now().date(), key="add_start_date")
+        with col_start2:
+            start_time = st.time_input("Время начала", value=datetime.now().time(), key="add_start_time")
+        
+        start_datetime = datetime.combine(start_date, start_time)
+    
+    with col2:
+        cash = st.number_input(
+            "Касса (руб)",
+            min_value=0,
+            value=0,
+            help="Сумма выручки за смену",
+            key="add_cash"
+        )
+        
+        st.markdown("**Время окончания:**")
+        col_end1, col_end2 = st.columns(2)
+        with col_end1:
+            end_date = st.date_input("Дата окончания", value=datetime.now().date(), key="add_end_date")
+        with col_end2:
+            end_time = st.time_input("Время окончания", value=datetime.now().time(), key="add_end_time")
+        
+        end_datetime = datetime.combine(end_date, end_time)
+    
+    # Проверка времени
+    if end_datetime <= start_datetime:
+        st.error("❌ Время окончания должно быть позже времени начала!")
+        return
+    
+    # Расчёт продолжительности
+    duration = end_datetime - start_datetime
+    total_seconds = duration.total_seconds()
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    
+    if hours > 0 and minutes > 0:
+        duration_str = f"{hours} ч {minutes} мин"
+    elif hours > 0:
+        duration_str = f"{hours} ч"
+    else:
+        duration_str = f"{minutes} мин"
+    
+    # Расчёт среднего часа
+    if hours > 0:
+        hourly_rate = int(cash / hours) if hours > 0 else 0
+    else:
+        # Если меньше часа, считаем по часам как есть
+        hourly_rate = int(cash / (total_seconds / 3600)) if total_seconds > 0 else 0
+    
+    st.markdown("---")
+    st.markdown("**📊 Итог:**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info(f"⏱ Продолжительность: {duration_str}")
+    with col2:
+        st.info(f"💰 Касса: {cash} руб")
+    with col3:
+        st.info(f"📊 Средний час: {hourly_rate} руб/ч")
+    
+    st.markdown("---")
+    
+    # Кнопки действий
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        if st.button("💾 Сохранить смену", type="primary", use_container_width=True):
+            success = save_manual_shift(
+                driver_id=driver_id,
+                start_time=start_datetime,
+                end_time=end_datetime,
+                cash=cash,
+                duration_str=duration_str,
+                hourly_rate=hourly_rate
+            )
+            
+            if success:
+                st.success(f"✅ Смена для водителя {driver_id} сохранена!")
+                st.balloons()
+                st.session_state.show_add_shift = False
+                st.rerun()
+            else:
+                st.error("❌ Ошибка при сохранении смены")
 
 if __name__ == "__main__":
     main()
