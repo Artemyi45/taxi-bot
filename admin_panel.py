@@ -144,6 +144,100 @@ def save_shift_edit(shift_id, editor_id, reason, old_start, new_start, old_end, 
         cur.close()
         conn.close()
 
+def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None, end_date=None):
+    """Получает смены с пагинацией и фильтрами"""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    query = """
+        SELECT 
+            id,
+            driver_id,
+            start_time,
+            end_time,
+            duration_text,
+            cash,
+            hourly_rate,
+            is_active,
+            is_paused,
+            created_at
+        FROM shifts 
+        WHERE 1=1
+    """
+    params = []
+    
+    if driver_id:
+        query += " AND driver_id = %s"
+        params.append(driver_id)
+    
+    if start_date:
+        query += " AND DATE(start_time) >= %s"
+        params.append(start_date)
+    
+    if end_date:
+        query += " AND DATE(start_time) <= %s"
+        params.append(end_date)
+    
+    query += " ORDER BY start_time DESC LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
+    
+    cur.execute(query, params)
+    shifts = cur.fetchall()
+    
+    # Получаем общее количество для пагинации
+    count_query = "SELECT COUNT(*) as total FROM shifts WHERE 1=1"
+    count_params = []
+    
+    if driver_id:
+        count_query += " AND driver_id = %s"
+        count_params.append(driver_id)
+    
+    if start_date:
+        count_query += " AND DATE(start_time) >= %s"
+        count_params.append(start_date)
+    
+    if end_date:
+        count_query += " AND DATE(start_time) <= %s"
+        count_params.append(end_date)
+    
+    cur.execute(count_query, count_params)
+    total = cur.fetchone()['total']
+    
+    cur.close()
+    conn.close()
+    
+    return shifts, total
+
+def delete_shift(shift_id):
+    """Удаляет смену и связанные записи"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    try:
+        # Сначала удаляем историю изменений
+        cur.execute("DELETE FROM shift_edits WHERE shift_id = %s", (shift_id,))
+        
+        # Затем удаляем саму смену
+        cur.execute("DELETE FROM shifts WHERE id = %s RETURNING id", (shift_id,))
+        
+        deleted_id = cur.fetchone()
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        if deleted_id:
+            print(f"✅ Смена #{shift_id} удалена")
+            return True, None
+        else:
+            return False, "Смена не найдена"
+            
+    except Exception as e:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False, str(e)
+
 # --- Вспомогательные функции ---
 def parse_datetime(dt_value):
     """Преобразует значение даты-времени из БД в datetime объект"""
@@ -176,288 +270,620 @@ def main():
     st.title("🚕 Админ-панель Такси-бота")
     st.markdown("---")
     
-    # Боковая панель для поиска
-    with st.sidebar:
-        st.header("🔍 Поиск смен")
-        
-        search_method = st.radio(
-            "Способ поиска:",
-            ["По ID смены", "По фильтрам"]
+    # Инициализация состояния пагинации
+    if 'page' not in st.session_state:
+        st.session_state.page = 0
+    if 'selected_shift_id' not in st.session_state:
+        st.session_state.selected_shift_id = None
+    if 'filters' not in st.session_state:
+        st.session_state.filters = {
+            'driver_id': None,
+            'start_date': None,
+            'end_date': None
+        }
+    
+    # Если выбрана смена - показываем детальную карточку
+    if st.session_state.selected_shift_id:
+        show_shift_detail(st.session_state.selected_shift_id)
+        return
+    
+    # ===== ФИЛЬТРЫ =====
+    st.subheader("🔍 Фильтры")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        filter_driver = st.number_input(
+            "ID водителя (оставьте 0 для всех)",
+            min_value=0,
+            value=st.session_state.filters.get('driver_id', 0),
+            key="filter_driver_input"
         )
-        
-        if search_method == "По ID смены":
-            shift_id = st.number_input("ID смены", min_value=1, step=1, value=1)
-            if st.button("Найти смену", type="primary"):
-                shift = get_shift_by_id(shift_id)
-                if shift:
-                    st.session_state.selected_shift = shift
-                    st.success(f"Найдена смена #{shift_id}")
-                else:
-                    st.error(f"Смена #{shift_id} не найдена")
-        
-        else:  # По фильтрам
-            driver_id = st.number_input("ID водителя", min_value=1, step=1, value=638440886)
-            date_filter = st.date_input("Дата", value=datetime.now().date())
-            min_cash = st.number_input("Касса от", min_value=0, value=0)
-            max_cash = st.number_input("Касса до", min_value=0, value=100000)
-            
-            if st.button("Найти", type="primary"):
-                shifts = search_shifts(driver_id, date_filter, min_cash, max_cash)
-                if shifts:
-                    st.session_state.search_results = shifts
-                    st.success(f"Найдено {len(shifts)} смен")
-                else:
-                    st.error("Смены не найдены")
-        
-        st.markdown("---")
-        st.markdown("**Статистика:**")
-        
+    
+    with col2:
+        filter_start_date = st.date_input(
+            "Дата с",
+            value=st.session_state.filters.get('start_date') or (datetime.now().date() - timedelta(days=30)),
+            key="filter_start_input"
+        )
+    
+    with col3:
+        filter_end_date = st.date_input(
+            "Дата по",
+            value=st.session_state.filters.get('end_date') or datetime.now().date(),
+            key="filter_end_input"
+        )
+    
+    # Кнопки фильтров
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Применить фильтры", type="primary", key="apply_filters"):
+            st.session_state.filters = {
+                'driver_id': filter_driver if filter_driver > 0 else None,
+                'start_date': filter_start_date,
+                'end_date': filter_end_date
+            }
+            st.session_state.page = 0  # Сбрасываем на первую страницу
+            st.rerun()
+    
+    with col2:
+        if st.button("Сбросить фильтры", type="secondary", key="reset_filters"):
+            st.session_state.filters = {
+                'driver_id': None,
+                'start_date': None,
+                'end_date': None
+            }
+            st.session_state.page = 0
+            st.rerun()
+    
+    with col3:
+        # Быстрая статистика
         conn = get_connection()
         cur = conn.cursor()
         
-        cur.execute("SELECT COUNT(*) FROM shifts")
-        total_shifts = cur.fetchone()[0]
+        # Строим запрос для статистики с учетом фильтров
+        stats_query = "SELECT COUNT(*) as total, SUM(cash) as total_cash FROM shifts WHERE 1=1"
+        stats_params = []
         
-        cur.execute("SELECT COUNT(*) FROM shift_edits")
-        total_edits = cur.fetchone()[0]
+        if st.session_state.filters['driver_id']:
+            stats_query += " AND driver_id = %s"
+            stats_params.append(st.session_state.filters['driver_id'])
         
-        cur.execute("SELECT COUNT(DISTINCT driver_id) FROM shifts")
-        total_drivers = cur.fetchone()[0]
+        if st.session_state.filters['start_date']:
+            stats_query += " AND DATE(start_time) >= %s"
+            stats_params.append(st.session_state.filters['start_date'])
         
+        if st.session_state.filters['end_date']:
+            stats_query += " AND DATE(start_time) <= %s"
+            stats_params.append(st.session_state.filters['end_date'])
+        
+        cur.execute(stats_query, stats_params)
+        stats = cur.fetchone()
         cur.close()
         conn.close()
         
-        st.metric("Всего смен", total_shifts)
-        st.metric("Всего правок", total_edits)
-        st.metric("Уникальных водителей", total_drivers)
+        st.metric("Найдено смен", stats[0] if stats else 0)
+    
+    st.markdown("---")
+    
+    # ===== ТАБЛИЦА СМЕН =====
+    st.subheader("📋 Все смены")
+    
+    # Получаем смены для текущей страницы
+    shifts, total = get_all_shifts_paginated(
+        offset=st.session_state.page * 20,
+        limit=20,
+        driver_id=st.session_state.filters['driver_id'],
+        start_date=st.session_state.filters['start_date'],
+        end_date=st.session_state.filters['end_date']
+    )
+    
+    if shifts:
+        # Создаем DataFrame
+        df = pd.DataFrame(shifts)
         
+        # Форматируем данные
+        df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
+        df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
+        
+        # Добавляем колонку статуса
+        df['status'] = df.apply(
+            lambda row: '🟢 Активна' if row['is_active'] else ('⏸ На паузе' if row['is_paused'] else '✅ Завершена'),
+            axis=1
+        )
+        
+        # Показываем таблицу с возможностью выбора
+        for _, shift in df.iterrows():
+            col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 2, 2, 2, 2, 1])
+            
+            with col1:
+                st.markdown(f"**#{shift['id']}**")
+            
+            with col2:
+                st.markdown(f"👤 {shift['driver_id']}")
+            
+            with col3:
+                st.markdown(f"📅 {shift['start_time']}")
+            
+            with col4:
+                st.markdown(f"⏱ {shift['duration_text'] or '—'}")
+            
+            with col5:
+                st.markdown(f"💰 {shift['cash']:,} руб")
+            
+            with col6:
+                st.markdown(f"📊 {shift['hourly_rate'] or 0:,} руб/ч")
+            
+            with col7:
+                if st.button("👁️", key=f"view_{shift['id']}"):
+                    st.session_state.selected_shift_id = shift['id']
+                    st.rerun()
+            
+            st.divider()
+        
+        # ===== ПАГИНАЦИЯ =====
         st.markdown("---")
+        total_pages = (total + 19) // 20  # Округление вверх
+        
+        if total_pages > 1:
+            st.write(f"Страница {st.session_state.page + 1} из {total_pages} (всего {total} смен)")
+            
+            cols = st.columns(5)
+            
+            with cols[0]:
+                if st.button("⏮️ Первая", disabled=st.session_state.page == 0):
+                    st.session_state.page = 0
+                    st.rerun()
+            
+            with cols[1]:
+                if st.button("◀️ Назад", disabled=st.session_state.page == 0):
+                    st.session_state.page -= 1
+                    st.rerun()
+            
+            with cols[2]:
+                # Прямой переход к странице
+                page_num = st.number_input(
+                    "Страница",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=st.session_state.page + 1,
+                    key="page_input"
+                )
+                if page_num != st.session_state.page + 1:
+                    st.session_state.page = page_num - 1
+                    st.rerun()
+            
+            with cols[3]:
+                if st.button("Вперед ▶️", disabled=st.session_state.page >= total_pages - 1):
+                    st.session_state.page += 1
+                    st.rerun()
+            
+            with cols[4]:
+                if st.button("Последняя ⏭️", disabled=st.session_state.page >= total_pages - 1):
+                    st.session_state.page = total_pages - 1
+                    st.rerun()
+    else:
+        st.info("🚫 Смены не найдены")
+    
+    # ===== БЫСТРЫЕ ДЕЙСТВИЯ =====
+    st.markdown("---")
+    st.subheader("⚡ Быстрые действия")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
         if st.button("🔄 Обновить страницу"):
             st.rerun()
     
-    # Основная область
-    tab1, tab2, tab3 = st.tabs(["📋 Список смен", "✏️ Редактирование", "📊 История"])
+    with col2:
+        if st.button("📊 Общая статистика"):
+            show_general_stats()
+    
+    with col3:
+        if st.button("📤 Экспорт данных"):
+            st.session_state.show_export = True
+            st.rerun()
+    
+        # Обработка экспорта данных
+    if st.session_state.get('show_export'):
+        show_export_data()
+        return
+
+def show_shift_detail(shift_id):
+    """Показывает детальную информацию о смене"""
+    st.button("← Назад к списку", on_click=lambda: st.session_state.update(
+        {'selected_shift_id': None}
+    ))
+    
+    shift = get_shift_by_id(shift_id)
+    if not shift:
+        st.error(f"Смена #{shift_id} не найдена")
+        return
+    
+    st.title(f"📋 Смена #{shift['id']}")
+    
+    # Основная информация
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("👤 Водитель")
+        st.info(f"**ID:** {shift['driver_id']}")
+        
+        # Здесь можно добавить информацию из таблицы drivers когда она будет
+        st.markdown("---")
+        
+        st.subheader("📅 Время")
+        start_time = parse_datetime(shift['start_time'])
+        end_time = parse_datetime(shift['end_time'])
+        
+        st.write(f"**Начало:** {start_time.strftime('%d.%m.%Y %H:%M')}")
+        st.write(f"**Окончание:** {end_time.strftime('%d.%m.%Y %H:%M')}")
+        
+        if shift.get('duration_text'):
+            st.write(f"**Продолжительность:** {shift['duration_text']}")
+        
+        st.write(f"**Создана:** {parse_datetime(shift['created_at']).strftime('%d.%m.%Y %H:%M')}")
+    
+    with col2:
+        st.subheader("💰 Финансы")
+        st.success(f"**Касса:** {shift['cash']:,} руб")
+        
+        if shift.get('hourly_rate'):
+            st.info(f"**Средний час:** {shift['hourly_rate']:,} руб/ч")
+        
+        st.markdown("---")
+        
+        st.subheader("📊 Статус")
+        if shift.get('is_active'):
+            if shift.get('is_paused'):
+                st.warning("⏸ На паузе")
+            else:
+                st.success("🟢 Активна")
+        else:
+            st.info("✅ Завершена")
+        
+        if shift.get('awaiting_cash_input'):
+            st.error("⏳ Ожидает ввода кассы")
+    
+    st.markdown("---")
+    
+    # Вкладки действий
+    tab1, tab2, tab3 = st.tabs(["✏️ Редактировать", "📊 История изменений", "🗑️ Удалить"])
     
     with tab1:
-        st.header("Список смен")
-        
-        if 'search_results' in st.session_state:
-            df = pd.DataFrame(st.session_state.search_results)
-            
-            # Форматируем даты
-            if not df.empty:
-                df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
-                df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
-                df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%d.%m.%Y %H:%M')
-                
-                # Показываем таблицу
-                st.dataframe(
-                    df[['id', 'driver_id', 'start_time', 'end_time', 'cash', 'hourly_rate']],
-                    use_container_width=True,
-                    column_config={
-                        'id': st.column_config.NumberColumn("ID", width="small"),
-                        'driver_id': st.column_config.NumberColumn("Водитель", width="small"),
-                        'cash': st.column_config.NumberColumn("Касса", format="%d руб"),
-                        'hourly_rate': st.column_config.NumberColumn("Средний", format="%d руб/ч"),
-                    }
-                )
-                
-                # Кнопка выбора смены для редактирования
-                selected_id = st.selectbox(
-                    "Выберите смену для редактирования:",
-                    df['id'].tolist(),
-                    format_func=lambda x: f"Смена #{x}"
-                )
-                
-                if st.button("Редактировать выбранную смену"):
-                    shift = get_shift_by_id(selected_id)
-                    if shift:
-                        st.session_state.selected_shift = shift
-                        st.success(f"Смена #{selected_id} загружена для редактирования")
-                        st.rerun()
-        
-        else:
-            st.info("Используйте панель поиска слева")
-            
-            # Быстрый поиск популярных ID
-            st.subheader("Быстрый поиск:")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button("Смена #1"):
-                    shift = get_shift_by_id(1)
-                    if shift:
-                        st.session_state.selected_shift = shift
-                        st.rerun()
-            with col2:
-                if st.button("Смена #2"):
-                    shift = get_shift_by_id(2)
-                    if shift:
-                        st.session_state.selected_shift = shift
-                        st.rerun()
-            with col3:
-                if st.button("Смена #3"):
-                    shift = get_shift_by_id(3)
-                    if shift:
-                        st.session_state.selected_shift = shift
-                        st.rerun()
+        show_edit_form(shift)
     
     with tab2:
-        st.header("Редактирование смены")
-        
-        if 'selected_shift' in st.session_state:
-            shift = st.session_state.selected_shift
-            
-            # Преобразуем строки времени в datetime объекты
-            start_time_obj = parse_datetime(shift['start_time'])
-            end_time_obj = parse_datetime(shift['end_time'])
-            
-            st.subheader(f"Смена #{shift['id']} • Водитель {shift['driver_id']}")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Текущие значения:**")
-                st.write(f"Начало: `{start_time_obj.strftime('%d.%m.%Y %H:%M')}`")
-                st.write(f"Окончание: `{end_time_obj.strftime('%d.%m.%Y %H:%M')}`")
-                st.write(f"Касса: `{shift['cash']} руб`")
-                st.write(f"Средний час: `{shift['hourly_rate']} руб/ч`")
-                if 'duration_text' in shift:
-                    st.write(f"Продолжительность: `{shift['duration_text']}`")
-            
-            with col2:
-                st.markdown("**Новые значения:**")
-                
-                # Поля для редактирования времени начала
-                st.markdown("**Время начала:**")
-                col_start1, col_start2 = st.columns(2)
-                with col_start1:
-                    new_start_date = st.date_input(
-                        "Дата начала",
-                        value=start_time_obj.date(),
-                        key="start_date"
-                    )
-                with col_start2:
-                    new_start_time = st.time_input(
-                        "Время начала",
-                        value=start_time_obj.time(),
-                        key="start_time"
-                    )
-                new_start = datetime.combine(new_start_date, new_start_time)
-                
-                # Поля для редактирования времени окончания
-                st.markdown("**Время окончания:**")
-                col_end1, col_end2 = st.columns(2)
-                with col_end1:
-                    new_end_date = st.date_input(
-                        "Дата окончания",
-                        value=end_time_obj.date(),
-                        key="end_date"
-                    )
-                with col_end2:
-                    new_end_time = st.time_input(
-                        "Время окончания",
-                        value=end_time_obj.time(),
-                        key="end_time"
-                    )
-                new_end = datetime.combine(new_end_date, new_end_time)
-                
-                new_cash = st.number_input(
-                    "Новая касса (руб)",
-                    min_value=0,
-                    value=shift['cash'],
-                    key="cash_input"
-                )
-                
-                reason = st.text_area(
-                    "Причина изменения", 
-                    placeholder="Почему вносите правки?",
-                    key="reason_input"
-                )
-            
-            # Кнопки действий
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if st.button("💾 Сохранить изменения", type="primary", key="save_btn"):
-                    if reason.strip() == "":
-                        st.error("Укажите причину изменения")
-                    else:
-                        success, error = save_shift_edit(
-                            shift_id=shift['id'],
-                            editor_id=shift['driver_id'],  # пока используем ID водителя как редактора
-                            reason=reason,
-                            old_start=start_time_obj,
-                            new_start=new_start,
-                            old_end=end_time_obj,
-                            new_end=new_end,
-                            old_cash=shift['cash'],
-                            new_cash=new_cash
-                        )
-                        
-                        if success:
-                            st.success("✅ Изменения сохранены!")
-                            st.info("Обновите страницу (F5) чтобы увидеть обновлённые данные")
-                            # Очищаем выбранную смену чтобы обновить данные
-                            if 'selected_shift' in st.session_state:
-                                del st.session_state.selected_shift
-                        else:
-                            st.error(f"❌ Ошибка при сохранении: {error}")
-            
-            with col2:
-                if st.button("📊 Показать историю", key="history_btn"):
-                    history = get_edit_history(shift['id'])
-                    if history:
-                        st.session_state.show_history = True
-                        st.rerun()
-            
-            with col3:
-                if st.button("❌ Отмена", key="cancel_btn"):
-                    if 'selected_shift' in st.session_state:
-                        del st.session_state.selected_shift
-                    st.rerun()
-        
-        else:
-            st.info("Выберите смену для редактирования во вкладке 'Список смен'")
+        show_edit_history(shift_id)
     
     with tab3:
-        st.header("История изменений")
+        show_delete_form(shift)
+
+def show_general_stats():
+    """Показывает общую статистику"""
+    st.subheader("📊 Общая статистика")
+    
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    # Основные метрики
+    col1, col2, col3, col4 = st.columns(4)
+    
+    cur.execute("SELECT COUNT(*) FROM shifts")
+    total_shifts = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM shifts WHERE is_active = TRUE")
+    active_shifts = cur.fetchone()[0]
+    
+    cur.execute("SELECT SUM(cash) FROM shifts")
+    total_cash = cur.fetchone()[0] or 0
+    
+    cur.execute("SELECT AVG(hourly_rate) FROM shifts WHERE hourly_rate > 0")
+    avg_hourly = cur.fetchone()[0] or 0
+    
+    with col1:
+        st.metric("Всего смен", total_shifts)
+    with col2:
+        st.metric("Активных смен", active_shifts)
+    with col3:
+        st.metric("Общая касса", f"{total_cash:,} руб")
+    with col4:
+        st.metric("Средний час", f"{avg_hourly:.0f} руб/ч")
+    
+    # Дополнительная статистика
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📈 По дням (последние 7 дней)")
+        cur.execute("""
+            SELECT DATE(start_time) as date, COUNT(*) as count, SUM(cash) as cash
+            FROM shifts 
+            WHERE start_time >= NOW() - INTERVAL '7 days'
+            GROUP BY DATE(start_time)
+            ORDER BY date DESC
+        """)
+        daily_stats = cur.fetchall()
         
-        if 'show_history' in st.session_state and 'selected_shift' in st.session_state:
-            shift = st.session_state.selected_shift
-            history = get_edit_history(shift['id'])
-            
-            if history:
-                df_history = pd.DataFrame(history)
+        if daily_stats:
+            df_daily = pd.DataFrame(daily_stats, columns=['date', 'count', 'cash'])
+            st.dataframe(df_daily)
+        else:
+            st.info("Нет данных за последние 7 дней")
+    
+    with col2:
+        st.subheader("👤 По водителям (топ 5)")
+        cur.execute("""
+            SELECT driver_id, COUNT(*) as shifts, SUM(cash) as total_cash
+            FROM shifts 
+            GROUP BY driver_id
+            ORDER BY total_cash DESC
+            LIMIT 5
+        """)
+        driver_stats = cur.fetchall()
+        
+        if driver_stats:
+            df_drivers = pd.DataFrame(driver_stats, columns=['driver_id', 'shifts', 'total_cash'])
+            st.dataframe(df_drivers)
+        else:
+            st.info("Нет данных по водителям")
+    
+    cur.close()
+    conn.close()
+
+# Эти функции нужно будет реализовать:
+def show_edit_form(shift):
+    """Форма редактирования смены"""
+    st.subheader("✏️ Редактирование смены")
+    
+    # Преобразуем строки времени в datetime объекты
+    start_time_obj = parse_datetime(shift['start_time'])
+    end_time_obj = parse_datetime(shift['end_time'])
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Текущие значения:**")
+        st.write(f"Начало: `{start_time_obj.strftime('%d.%m.%Y %H:%M')}`")
+        st.write(f"Окончание: `{end_time_obj.strftime('%d.%m.%Y %H:%M')}`")
+        st.write(f"Касса: `{shift['cash']} руб`")
+        if shift.get('hourly_rate'):
+            st.write(f"Средний час: `{shift['hourly_rate']} руб/ч`")
+        if 'duration_text' in shift:
+            st.write(f"Продолжительность: `{shift['duration_text']}`")
+    
+    with col2:
+        st.markdown("**Новые значения:**")
+        
+        # Поля для редактирования времени начала
+        st.markdown("**Время начала:**")
+        col_start1, col_start2 = st.columns(2)
+        with col_start1:
+            new_start_date = st.date_input(
+                "Дата начала",
+                value=start_time_obj.date(),
+                key=f"edit_start_date_{shift['id']}"
+            )
+        with col_start2:
+            new_start_time = st.time_input(
+                "Время начала",
+                value=start_time_obj.time(),
+                key=f"edit_start_time_{shift['id']}"
+            )
+        new_start = datetime.combine(new_start_date, new_start_time)
+        
+        # Поля для редактирования времени окончания
+        st.markdown("**Время окончания:**")
+        col_end1, col_end2 = st.columns(2)
+        with col_end1:
+            new_end_date = st.date_input(
+                "Дата окончания",
+                value=end_time_obj.date(),
+                key=f"edit_end_date_{shift['id']}"
+            )
+        with col_end2:
+            new_end_time = st.time_input(
+                "Время окончания",
+                value=end_time_obj.time(),
+                key=f"edit_end_time_{shift['id']}"
+            )
+        new_end = datetime.combine(new_end_date, new_end_time)
+        
+        new_cash = st.number_input(
+            "Новая касса (руб)",
+            min_value=0,
+            value=shift['cash'],
+            key=f"edit_cash_{shift['id']}"
+        )
+        
+        reason = st.text_area(
+            "Причина изменения", 
+            placeholder="Почему вносите правки?",
+            key=f"edit_reason_{shift['id']}"
+        )
+    
+    # Кнопки действий
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("💾 Сохранить изменения", type="primary", key=f"save_edit_{shift['id']}"):
+            if reason.strip() == "":
+                st.error("Укажите причину изменения")
+            else:
+                # Определяем ID редактора (пока используем системный)
+                editor_id = 0  # 0 = системный пользователь
                 
-                # Форматируем
-                df_history['edited_at'] = pd.to_datetime(df_history['edited_at']).dt.strftime('%d.%m.%Y %H:%M')
-                
-                # Показываем в виде таблицы
-                st.dataframe(
-                    df_history[['edited_at', 'editor_id', 'reason', 'old_cash', 'new_cash', 'old_hourly_rate', 'new_hourly_rate']],
-                    use_container_width=True,
-                    column_config={
-                        'edited_at': "Время",
-                        'editor_id': "Редактор",
-                        'reason': "Причина",
-                        'old_cash': "Было (руб)",
-                        'new_cash': "Стало (руб)",
-                        'old_hourly_rate': "Было (руб/ч)",
-                        'new_hourly_rate': "Стало (руб/ч)",
-                    }
+                success, error = save_shift_edit(
+                    shift_id=shift['id'],
+                    editor_id=editor_id,
+                    reason=reason,
+                    old_start=start_time_obj,
+                    new_start=new_start,
+                    old_end=end_time_obj,
+                    new_end=new_end,
+                    old_cash=shift['cash'],
+                    new_cash=new_cash
                 )
                 
-                # Кнопка возврата
-                if st.button("← Назад к редактированию", key="back_btn"):
-                    del st.session_state.show_history
+                if success:
+                    st.success("✅ Изменения сохранены!")
+                    st.info("Обновите страницу чтобы увидеть обновлённые данные")
                     st.rerun()
+                else:
+                    st.error(f"❌ Ошибка при сохранении: {error}")
+    
+    with col2:
+        if st.button("🔄 Сбросить", type="secondary", key=f"reset_edit_{shift['id']}"):
+            st.rerun()
+    
+    with col3:
+        if st.button("❌ Отмена", key=f"cancel_edit_{shift['id']}"):
+            st.session_state.selected_shift_id = None
+            st.rerun()
+
+def show_edit_history(shift_id):
+    """История изменений смены"""
+    history = get_edit_history(shift_id)
+    if history:
+        df_history = pd.DataFrame(history)
+        df_history['edited_at'] = pd.to_datetime(df_history['edited_at']).dt.strftime('%d.%m.%Y %H:%M')
+        st.dataframe(df_history)
+    else:
+        st.info("Нет истории изменений")
+
+def show_delete_form(shift):
+    """Форма удаления смены"""
+    st.subheader("🗑️ Удаление смены")
+    
+    st.warning("⚠️ Внимание! Это действие необратимо.")
+    
+    st.write(f"**ID смены:** #{shift['id']}")
+    st.write(f"**Водитель:** {shift['driver_id']}")
+    st.write(f"**Дата начала:** {parse_datetime(shift['start_time']).strftime('%d.%m.%Y %H:%M')}")
+    st.write(f"**Касса:** {shift['cash']} руб")
+    
+    if shift.get('is_active'):
+        st.error("❌ Нельзя удалять активную смену!")
+        st.info("Завершите смену в боте перед удалением.")
+        return
+    
+    # Подтверждение удаления
+    st.markdown("---")
+    confirm_text = st.text_input(
+        f"Введите 'УДАЛИТЬ {shift['id']}' для подтверждения:",
+        key=f"confirm_delete_{shift['id']}"
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🗑️ Удалить смену", type="primary", key=f"delete_btn_{shift['id']}"):
+            if confirm_text == f"УДАЛИТЬ {shift['id']}":
+                with st.spinner("Удаление..."):
+                    success, error = delete_shift(shift['id'])
+                    
+                    if success:
+                        st.success(f"✅ Смена #{shift['id']} удалена")
+                        st.balloons()
+                        # Возвращаемся к списку через 2 секунды
+                        import time
+                        time.sleep(2)
+                        st.session_state.selected_shift_id = None
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Ошибка при удалении: {error}")
             else:
-                st.info("Нет истории изменений для этой смены")
-                if st.button("← Назад", key="back2_btn"):
-                    del st.session_state.show_history
-                    st.rerun()
-        else:
-            st.info("Выберите смену чтобы увидеть историю изменений")
+                st.error("Неправильный текст подтверждения")
+    
+    with col2:
+        if st.button("❌ Отмена", key=f"cancel_delete_{shift['id']}"):
+            st.session_state.selected_shift_id = None
+            st.rerun()
+
+def show_export_data():
+    """Форма экспорта данных"""
+    st.button("← Назад к списку", on_click=lambda: st.session_state.update(
+        {'show_export': False}
+    ))
+    
+    st.subheader("📤 Экспорт данных")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        export_driver = st.number_input(
+            "ID водителя (0 = все)",
+            min_value=0,
+            value=0,
+            key="export_driver"
+        )
+    
+    with col2:
+        export_start = st.date_input(
+            "Дата с",
+            value=datetime.now().date() - timedelta(days=30),
+            key="export_start"
+        )
+    
+    with col3:
+        export_end = st.date_input(
+            "Дата по",
+            value=datetime.now().date(),
+            key="export_end"
+        )
+    
+    if st.button("📊 Сформировать отчет", type="primary"):
+        with st.spinner("Формирование отчета..."):
+            # Используем существующую функцию поиска
+            shifts = search_shifts(
+                driver_id=export_driver if export_driver > 0 else None,
+                date_filter=None,  # Используем диапазон дат через SQL
+                min_cash=None,
+                max_cash=None
+            )
+            
+            if shifts:
+                df = pd.DataFrame(shifts)
+                
+                # Форматируем даты
+                df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Фильтруем по дате
+                if export_start:
+                    df = df[pd.to_datetime(df['start_time']) >= pd.Timestamp(export_start)]
+                if export_end:
+                    df = df[pd.to_datetime(df['start_time']) <= pd.Timestamp(export_end + timedelta(days=1))]
+                
+                if not df.empty:
+                    csv = df.to_csv(index=False, encoding='utf-8-sig')
+                    
+                    # Имя файла
+                    filename = f"taxi_shifts_{export_start}_{export_end}"
+                    if export_driver > 0:
+                        filename += f"_driver_{export_driver}"
+                    filename += ".csv"
+                    
+                    st.success(f"✅ Отчет готов: {len(df)} записей")
+                    
+                    st.download_button(
+                        label="⬇️ Скачать CSV",
+                        data=csv,
+                        file_name=filename,
+                        mime="text/csv",
+                        key="download_csv"
+                    )
+                    
+                    # Предпросмотр
+                    st.subheader("Предпросмотр данных:")
+                    st.dataframe(df.head(10))
+                else:
+                    st.warning("Нет данных для выбранного диапазона")
+            else:
+                st.warning("Нет данных для экспорта")
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
