@@ -13,6 +13,7 @@ def init_database():
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     cur = conn.cursor()
     
+    # Создаем базовую таблицу (без новых полей для обратной совместимости)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS shifts (
             id SERIAL PRIMARY KEY,
@@ -23,32 +24,80 @@ def init_database():
             duration_seconds INTEGER,
             cash INTEGER NOT NULL CHECK (cash >= 0),
             hourly_rate INTEGER CHECK (hourly_rate >= 0),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            is_active BOOLEAN DEFAULT FALSE,
-            is_paused BOOLEAN DEFAULT FALSE,
-            pause_start_time TIMESTAMP,
-            pause_duration_seconds INTEGER DEFAULT 0,
-            awaiting_cash_input BOOLEAN DEFAULT FALSE
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    cur.execute('''
-        CREATE INDEX IF NOT EXISTS idx_shifts_driver_id 
-        ON shifts(driver_id)
-    ''')
-    
-    cur.execute('''
-        CREATE INDEX IF NOT EXISTS idx_shifts_active 
-        ON shifts(driver_id, is_active) 
-        WHERE is_active = TRUE
-    ''')
-    
     conn.commit()
+    print("✅ База данных инициализирована (базовая структура)")
+    
+    # Теперь добавляем новые поля если их нет
+    print("🔧 Проверяем наличие новых полей...")
+    
+    # Список полей для добавления
+    new_columns = [
+        ('is_active', 'BOOLEAN DEFAULT FALSE'),
+        ('is_paused', 'BOOLEAN DEFAULT FALSE'),
+        ('pause_start_time', 'TIMESTAMP'),
+        ('pause_duration_seconds', 'INTEGER DEFAULT 0'),
+        ('awaiting_cash_input', 'BOOLEAN DEFAULT FALSE')
+    ]
+    
+    for column_name, column_type in new_columns:
+        try:
+            cur.execute(f'''
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='shifts' AND column_name='{column_name}'
+            ''')
+            
+            if not cur.fetchone():
+                print(f"   Добавляем поле {column_name}...")
+                cur.execute(f'ALTER TABLE shifts ADD COLUMN {column_name} {column_type}')
+                conn.commit()
+                print(f"   ✅ Поле {column_name} добавлено")
+            else:
+                print(f"   ✅ Поле {column_name} уже существует")
+                
+        except Exception as e:
+            print(f"   ⚠️ Ошибка при добавлении поля {column_name}: {e}")
+            conn.rollback()
+    
+    # Создаем индексы (после добавления всех полей)
+    print("🔧 Создаем индексы...")
+    
+    try:
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_shifts_driver_id 
+            ON shifts(driver_id)
+        ''')
+        print("   ✅ Индекс idx_shifts_driver_id создан")
+    except Exception as e:
+        print(f"   ⚠️ Ошибка при создании idx_shifts_driver_id: {e}")
+    
+    try:
+        # Проверяем есть ли уже поле is_active перед созданием индекса
+        cur.execute('''
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='shifts' AND column_name='is_active'
+        ''')
+        
+        if cur.fetchone():
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_shifts_active 
+                ON shifts(driver_id, is_active) 
+                WHERE is_active = TRUE
+            ''')
+            print("   ✅ Индекс idx_shifts_active создан")
+        else:
+            print("   ⏭️ Поле is_active отсутствует, индекс не создан")
+    except Exception as e:
+        print(f"   ⚠️ Ошибка при создании idx_shifts_active: {e}")
+    
     cur.close()
     conn.close()
-    print("✅ База данных инициализирована")
-
-init_database()
+    print("🎉 Инициализация БД завершена!")
 
 # --- Константы и утилиты ---
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
