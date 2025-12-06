@@ -176,13 +176,30 @@ def get_user_state(user_id):
     """Возвращает состояние пользователя, создаёт если нет. Восстанавливает из БД если есть активная смена."""
     # Если уже есть в памяти - возвращаем
     if user_id in user_states:
+        print(f"📦 Используем состояние из памяти для пользователя {user_id}")
         return user_states[user_id]
     
     # Проверяем БД на наличие активной смены
+    print(f"🔍 Проверяем БД на активные смены для пользователя {user_id}")
     active_shift = get_active_shift(user_id)
     
-    if active_shift:
-        # Восстанавливаем состояние из БД
+    # ВАЖНО: Проверяем что active_shift не None и является словарем
+    if not active_shift or not isinstance(active_shift, dict):
+        # Нет активной смены - создаем новое состояние
+        user_states[user_id] = {
+            'is_working': False,
+            'shift_start_time': None,
+            'is_paused': False, 
+            'pause_start_time': None,
+            "awaiting_cash_input": False,
+            "pending_shift_data": None,
+            'shift_id': None
+        }
+        print(f"🆕 Создано новое состояние для пользователя {user_id}")
+        return user_states[user_id]
+    
+    # Восстанавливаем состояние из БД
+    try:
         start_time = active_shift['start_time']
         if isinstance(start_time, str):
             start_time = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
@@ -197,15 +214,21 @@ def get_user_state(user_id):
         user_states[user_id] = {
             'is_working': True,
             'shift_start_time': start_time,
-            'is_paused': active_shift['is_paused'],
+            'is_paused': active_shift.get('is_paused', False),
             'pause_start_time': active_shift.get('pause_start_time'),
             'awaiting_cash_input': active_shift.get('awaiting_cash_input', False),
             'pending_shift_data': None,
-            'shift_id': active_shift['id']  # сохраняем ID смены для обновлений
+            'shift_id': active_shift.get('id')  # сохраняем ID смены для обновлений
         }
         
+        print(f"✅ Восстановлено состояние из БД для пользователя {user_id}")
+        print(f"   ID смены: {active_shift.get('id')}")
+        print(f"   Начало: {start_time.strftime('%d.%m.%Y %H:%M')}")
+        print(f"   Пауза: {'Да' if user_states[user_id]['is_paused'] else 'Нет'}")
+        print(f"   Ожидает кассу: {'Да' if user_states[user_id]['awaiting_cash_input'] else 'Нет'}")
+        
         # Если смена на паузе, корректируем время начала
-        if active_shift['is_paused'] and active_shift.get('pause_start_time'):
+        if user_states[user_id]['is_paused'] and active_shift.get('pause_start_time'):
             pause_start = active_shift['pause_start_time']
             if isinstance(pause_start, str):
                 pause_start = datetime.datetime.fromisoformat(pause_start.replace('Z', '+00:00'))
@@ -226,16 +249,15 @@ def get_user_state(user_id):
             current_pause = (current_time - pause_start).total_seconds()
             total_pause_seconds += current_pause
             
-            print(f"   ⏸ Смена на паузе. Накоплено пауз: {total_pause_seconds} сек")
+            print(f"   ⏸ Смена на паузе. Накоплено пауз: {total_pause_seconds:.0f} сек")
             
             # Сдвигаем время начала на общее время пауз
             user_states[user_id]['shift_start_time'] -= datetime.timedelta(seconds=total_pause_seconds)
+            print(f"   Скорректировано время начала с учетом пауз")
         
-        print(f"✅ Восстановлено состояние из БД для пользователя {user_id}")
-        print(f"   Начало: {user_states[user_id]['shift_start_time'].strftime('%d.%m.%Y %H:%M')}")
-        print(f"   Пауза: {'Да' if user_states[user_id]['is_paused'] else 'Нет'}")
-    else:
-        # Нет активной смены - создаем новое состояние
+    except KeyError as e:
+        print(f"❌ Ошибка ключа в данных смены: {e}")
+        # Создаем новое состояние при ошибке данных
         user_states[user_id] = {
             'is_working': False,
             'shift_start_time': None,
@@ -245,7 +267,6 @@ def get_user_state(user_id):
             "pending_shift_data": None,
             'shift_id': None
         }
-        print(f"🆕 Создано новое состояние для пользователя {user_id}")
     
     return user_states[user_id]
 
@@ -315,33 +336,56 @@ def get_user_shifts_grouped_by_date(user_id):
 
 def get_active_shift(user_id):
     """Получает активную смену пользователя из БД"""
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    
-    # Сначала проверяем есть ли поле is_active
-    cur.execute('''
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name='shifts' AND column_name='is_active'
-    ''')
-    
-    if not cur.fetchone():
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Сначала проверяем есть ли поле is_active в таблице
+        cur.execute('''
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='shifts' AND column_name='is_active'
+        ''')
+        
+        has_is_active = cur.fetchone()
+        
+        if not has_is_active:
+            print(f"⚠️ Поле is_active отсутствует в таблице для пользователя {user_id}")
+            cur.close()
+            conn.close()
+            return None
+        
+        # Проверяем есть ли активные смены у пользователя
+        cur.execute('''
+            SELECT * FROM shifts 
+            WHERE driver_id = %s 
+              AND is_active = TRUE 
+            ORDER BY start_time DESC 
+            LIMIT 1
+        ''', (user_id,))
+        
+        shift = cur.fetchone()
         cur.close()
         conn.close()
+        
+        if shift:
+            print(f"✅ Найдена активная смена в БД для пользователя {user_id}")
+            print(f"   ID смены: {shift['id']}")
+            print(f"   Начало: {shift['start_time']}")
+            print(f"   Пауза: {'Да' if shift['is_paused'] else 'Нет'}")
+            return shift
+        else:
+            print(f"📭 Нет активных смен в БД для пользователя {user_id}")
+            return None
+            
+    except psycopg2.Error as e:
+        print(f"❌ Ошибка PostgreSQL при получении активной смены: {e}")
         return None
-    
-    cur.execute('''
-        SELECT * FROM shifts 
-        WHERE driver_id = %s 
-          AND is_active = TRUE 
-        ORDER BY start_time DESC 
-        LIMIT 1
-    ''', (user_id,))
-    
-    shift = cur.fetchone()
-    cur.close()
-    conn.close()
-    return shift
+    except Exception as e:
+        print(f"❌ Неожиданная ошибка при получении активной смены: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def start_shift_in_db(user_id, start_time):
     """Создает новую активную смену в БД"""
