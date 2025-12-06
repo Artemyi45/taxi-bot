@@ -491,9 +491,11 @@ def main():
 
 def show_shift_detail(shift_id):
     """Показывает детальную информацию о смене"""
-    st.button("← Назад к списку", on_click=lambda: st.session_state.update(
-        {'selected_shift_id': None}
-    ))
+    st.button("← Назад к списку", 
+              on_click=lambda: st.session_state.update(
+                  {'selected_shift_id': None}
+              ),
+              key=f"back_from_detail_{shift_id}")
     
     shift = get_shift_by_id(shift_id)
     if not shift:
@@ -801,9 +803,11 @@ def show_delete_form(shift):
 
 def show_export_data():
     """Форма экспорта данных"""
-    st.button("← Назад к списку", on_click=lambda: st.session_state.update(
-        {'show_export': False}
-    ))
+    st.button("← Назад к списку", 
+              on_click=lambda: st.session_state.update(
+                  {'show_export': False}
+              ),
+              key="back_from_export")
     
     st.subheader("📤 Экспорт данных")
     
