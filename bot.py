@@ -23,13 +23,24 @@ def init_database():
             duration_seconds INTEGER,
             cash INTEGER NOT NULL CHECK (cash >= 0),
             hourly_rate INTEGER CHECK (hourly_rate >= 0),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT FALSE,
+            is_paused BOOLEAN DEFAULT FALSE,
+            pause_start_time TIMESTAMP,
+            pause_duration_seconds INTEGER DEFAULT 0,
+            awaiting_cash_input BOOLEAN DEFAULT FALSE
         )
     ''')
     
     cur.execute('''
         CREATE INDEX IF NOT EXISTS idx_shifts_driver_id 
         ON shifts(driver_id)
+    ''')
+    
+    cur.execute('''
+        CREATE INDEX IF NOT EXISTS idx_shifts_active 
+        ON shifts(driver_id, is_active) 
+        WHERE is_active = TRUE
     ''')
     
     conn.commit()
@@ -96,18 +107,59 @@ motivational_messages = [
 bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 # --- Состояния пользователей ---
-user_states = {}
 def get_user_state(user_id):
-    """Возвращает состояние пользователя, создаёт если нет"""
-    if user_id not in user_states:
+    """Возвращает состояние пользователя, создаёт если нет. Восстанавливает из БД если есть активная смена."""
+    # Если уже есть в памяти - возвращаем
+    if user_id in user_states:
+        return user_states[user_id]
+    
+    # Проверяем БД на наличие активной смены
+    active_shift = get_active_shift(user_id)
+    
+    if active_shift:
+        # Восстанавливаем состояние из БД
+        start_time = active_shift['start_time']
+        if isinstance(start_time, str):
+            start_time = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+        
+        user_states[user_id] = {
+            'is_working': True,
+            'shift_start_time': start_time,
+            'is_paused': active_shift['is_paused'],
+            'pause_start_time': active_shift.get('pause_start_time'),
+            'awaiting_cash_input': active_shift.get('awaiting_cash_input', False),
+            'pending_shift_data': None,
+            'shift_id': active_shift['id']  # сохраняем ID смены для обновлений
+        }
+        
+        # Если смена на паузе, корректируем время начала
+        if active_shift['is_paused'] and active_shift.get('pause_start_time'):
+            pause_start = active_shift['pause_start_time']
+            if isinstance(pause_start, str):
+                pause_start = datetime.datetime.fromisoformat(pause_start.replace('Z', '+00:00'))
+            
+            # Учитываем уже накопленное время пауз
+            total_pause_seconds = active_shift.get('pause_duration_seconds', 0)
+            if active_shift['pause_start_time']:
+                current_pause = (get_moscow_time() - pause_start).total_seconds()
+                total_pause_seconds += current_pause
+            
+            # Сдвигаем время начала на общее время пауз
+            user_states[user_id]['shift_start_time'] -= datetime.timedelta(seconds=total_pause_seconds)
+        
+        print(f"✅ Восстановлено состояние из БД для пользователя {user_id}")
+    else:
+        # Нет активной смены - создаем новое состояние
         user_states[user_id] = {
             'is_working': False,
             'shift_start_time': None,
             'is_paused': False, 
             'pause_start_time': None,
             "awaiting_cash_input": False,
-            "pending_shift_data": None
+            "pending_shift_data": None,
+            'shift_id': None
         }
+    
     return user_states[user_id]
 
 # --- Работа с БД ---
@@ -163,6 +215,147 @@ def get_user_shifts_grouped_by_date(user_id):
     conn.close()
     return shifts
 
+def get_active_shift(user_id):
+    """Получает активную смену пользователя из БД"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cur.execute('''
+        SELECT * FROM shifts 
+        WHERE driver_id = %s 
+          AND is_active = TRUE 
+        ORDER BY start_time DESC 
+        LIMIT 1
+    ''', (user_id,))
+    
+    shift = cur.fetchone()
+    cur.close()
+    conn.close()
+    return shift
+
+def start_shift_in_db(user_id, start_time):
+    """Создает новую активную смену в БД"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    
+    # Сначала завершаем старые активные смены (на всякий случай)
+    cur.execute('''
+        UPDATE shifts 
+        SET is_active = FALSE 
+        WHERE driver_id = %s AND is_active = TRUE
+    ''', (user_id,))
+    
+    # Создаем новую смену
+    cur.execute('''
+        INSERT INTO shifts 
+        (driver_id, start_time, end_time, cash, hourly_rate, is_active)
+        VALUES (%s, %s, %s, 0, 0, TRUE)
+        RETURNING id
+    ''', (user_id, start_time, start_time))
+    
+    shift_id = cur.fetchone()[0]
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    print(f"✅ Смена #{shift_id} создана для пользователя {user_id}")
+    return shift_id
+
+def update_shift_pause(user_id, is_paused, pause_start_time=None):
+    """Обновляет состояние паузы в активной смене"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    
+    if is_paused:
+        cur.execute('''
+            UPDATE shifts 
+            SET is_paused = TRUE, 
+                pause_start_time = %s
+            WHERE driver_id = %s 
+              AND is_active = TRUE
+        ''', (pause_start_time, user_id))
+    else:
+        # Снимаем паузу и обновляем общее время пауз
+        cur.execute('''
+            UPDATE shifts 
+            SET is_paused = FALSE,
+                pause_duration_seconds = pause_duration_seconds + 
+                    EXTRACT(EPOCH FROM (NOW() - pause_start_time))
+            WHERE driver_id = %s 
+              AND is_active = TRUE
+        ''', (user_id,))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    print(f"✅ Пауза обновлена для пользователя {user_id}")
+
+def complete_shift_in_db(user_id, end_time, duration_str, cash, hourly_rate):
+    """Завершает смену в БД"""
+    duration_seconds = int((end_time - datetime.datetime.fromisoformat(str(end_time).replace('Z', '+00:00'))).total_seconds())
+    
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    
+    cur.execute('''
+        UPDATE shifts 
+        SET end_time = %s,
+            duration_text = %s,
+            duration_seconds = %s,
+            cash = %s,
+            hourly_rate = %s,
+            is_active = FALSE,
+            is_paused = FALSE,
+            awaiting_cash_input = FALSE
+        WHERE driver_id = %s 
+          AND is_active = TRUE
+        RETURNING id
+    ''', (end_time, duration_str, duration_seconds, cash, hourly_rate, user_id))
+    
+    result = cur.fetchone()
+    
+    if result:
+        shift_id = result[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"✅ Смена #{shift_id} завершена для пользователя {user_id}")
+        return True
+    else:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        print(f"❌ Не найдена активная смена для пользователя {user_id}")
+        return False
+
+def cleanup_old_states():
+    """Очищает зависшие состояния (например, смены в режиме ожидания кассы больше 24 часов)"""
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    
+    # Находим смены, которые ожидают ввода кассы больше 24 часов
+    cur.execute('''
+        UPDATE shifts 
+        SET is_active = FALSE,
+            awaiting_cash_input = FALSE,
+            end_time = start_time + INTERVAL '1 hour'
+        WHERE is_active = TRUE 
+          AND awaiting_cash_input = TRUE
+          AND created_at < NOW() - INTERVAL '24 hours'
+        RETURNING id, driver_id
+    ''')
+    
+    cleaned = cur.fetchall()
+    
+    if cleaned:
+        print(f"🔄 Очищено {len(cleaned)} зависших состояний: {cleaned}")
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
 # --- Мотивация ---
 def send_motivation(chat_id, user_id):
     """Отправляет случайное мотивационное сообщение через 3 секунды"""
@@ -172,7 +365,22 @@ def send_motivation(chat_id, user_id):
     def motivation_timer():
         time.sleep(3)
         state = get_user_state(user_id)
-        if state['is_working'] and not state['is_paused']:
+        
+        # Проверяем что смена активна и не на паузе
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute('''
+            SELECT is_active, is_paused 
+            FROM shifts 
+            WHERE driver_id = %s 
+            ORDER BY id DESC 
+            LIMIT 1
+        ''', (user_id,))
+        shift_status = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if shift_status and shift_status['is_active'] and not shift_status['is_paused']:
             message = random.choice(motivational_messages)
             bot.send_message(chat_id, message)
             print(f"✅ Мотивация отправлена пользователю {user_id}")
@@ -216,28 +424,32 @@ def handle_cash_input(message):
             hourly_rate_rounded = 0
             hourly_rate_str = "0 в час"
         
-        save_shift_to_db(
+        # Завершаем смену в БД
+        success = complete_shift_in_db(
             user_id,
-            data['start_time'],
             data['end_time'],
             data['duration_str'],
             cash,
             hourly_rate_rounded
         )
         
-        # Сбрасываем состояние
-        state['is_working'] = False
-        state['shift_start_time'] = None
-        state['is_paused'] = False
-        state['pause_start_time'] = None
-        state['awaiting_cash_input'] = False
-        state['pending_shift_data'] = None
-        
-        bot.send_message(message.chat.id,
-                       f"✅ Смена завершена!\n"
-                       f"⏱ Отработано: {data['duration_str']}\n"
-                       f"💰 Касса: {cash} руб\n"
-                       f"📊 Средний час: {hourly_rate_str}")
+        if success:
+            # Сбрасываем состояние
+            state['is_working'] = False
+            state['shift_start_time'] = None
+            state['is_paused'] = False
+            state['pause_start_time'] = None
+            state['awaiting_cash_input'] = False
+            state['pending_shift_data'] = None
+            state['shift_id'] = None
+            
+            bot.send_message(message.chat.id,
+                           f"✅ Смена завершена!\n"
+                           f"⏱ Отработано: {data['duration_str']}\n"
+                           f"💰 Касса: {cash} руб\n"
+                           f"📊 Средний час: {hourly_rate_str}")
+        else:
+            bot.send_message(message.chat.id, "❌ Ошибка при сохранении смены")
         
     except ValueError:
         bot.send_message(message.chat.id, 
@@ -254,58 +466,105 @@ def handle_buttons(message):
     
     if message.text == 'В бой! Начать смену':
         if not state['is_working']:
-            state['is_working'] = True
-            state['shift_start_time'] = get_moscow_time()
-            bot.send_message(message.chat.id, "Смена начата! 🚕")
-            send_motivation(message.chat.id, user_id)
+            start_time = get_moscow_time()
+            shift_id = start_shift_in_db(user_id, start_time)
+            
+            if shift_id:
+                state['is_working'] = True
+                state['shift_start_time'] = start_time
+                state['shift_id'] = shift_id
+                state['is_paused'] = False
+                state['pause_start_time'] = None
+                state['awaiting_cash_input'] = False
+                
+                bot.send_message(message.chat.id, "Смена начата! 🚕")
+                send_motivation(message.chat.id, user_id)
+            else:
+                bot.send_message(message.chat.id, "❌ Ошибка при начале смены")
         else:
             bot.send_message(message.chat.id, "Смена уже начата!")
     
     elif message.text == 'Пауза/Продолжить':
-        if state['is_working'] and not state['is_paused']:
+        if not state['is_working']:
+            bot.send_message(message.chat.id, "❌ Смена не начата")
+            return
+        
+        current_time = get_moscow_time()
+        
+        if not state['is_paused']:
+            # Ставим на паузу
             state['is_paused'] = True
-            state['pause_start_time'] = get_moscow_time()
+            state['pause_start_time'] = current_time
+            
+            # Обновляем в БД
+            update_shift_pause(user_id, True, current_time)
+            
             bot.send_message(message.chat.id, "⏸ Смена на паузе")
             
-        elif state['is_working'] and state['is_paused']:
-            state['is_paused'] = False
-            pause_duration = get_moscow_time() - state['pause_start_time']
+        else:
+            # Снимаем с паузы
+            pause_duration = current_time - state['pause_start_time']
+            
+            # Обновляем время начала с учетом паузы
             state['shift_start_time'] += pause_duration
+            state['is_paused'] = False
+            state['pause_start_time'] = None
+            
+            # Обновляем в БД
+            update_shift_pause(user_id, False, None)
+            
             bot.send_message(message.chat.id, "▶ Смена продолжена")
-            
-        else:
-            bot.send_message(message.chat.id, "❌ Смена не начата")
-
+    
     elif message.text == 'Завершить смену':
-        if state['is_working']:
-            end_time = get_moscow_time()
-            work_duration = end_time - state['shift_start_time']
-            total_seconds = work_duration.total_seconds()
-            
-            hours = int(total_seconds // 3600)
-            minutes = int((total_seconds % 3600) // 60)
-            
-            if hours > 0 and minutes > 0:
-                time_str = f"{hours} ч {minutes} мин"
-            elif hours > 0:
-                time_str = f"{hours} ч"
-            else:
-                time_str = f"{minutes} мин"
-            
-            state['pending_shift_data'] = {
-                'start_time': state['shift_start_time'],
-                'end_time': end_time,
-                'duration_str': time_str
-            }
-            
-            state['awaiting_cash_input'] = True
-            
-            bot.send_message(message.chat.id, 
-                           f"⏱ Отработано: {time_str}\n"
-                           "💵 Введите сумму в кассе:")
-            
+        if not state['is_working']:
+            bot.send_message(message.chat.id, "❌ Смена не начата")
+            return
+        
+        end_time = get_moscow_time()
+        
+        # Вычисляем чистое рабочее время (исключая паузы)
+        if state['is_paused']:
+            # Если на паузе, считаем до начала паузы
+            work_duration = state['pause_start_time'] - state['shift_start_time']
         else:
-            bot.send_message(message.chat.id, "Смена не начата!")
+            work_duration = end_time - state['shift_start_time']
+        
+        total_seconds = work_duration.total_seconds()
+        
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        
+        if hours > 0 and minutes > 0:
+            time_str = f"{hours} ч {minutes} мин"
+        elif hours > 0:
+            time_str = f"{hours} ч"
+        else:
+            time_str = f"{minutes} мин"
+        
+        state['pending_shift_data'] = {
+            'start_time': state['shift_start_time'],
+            'end_time': end_time,
+            'duration_str': time_str
+        }
+        
+        state['awaiting_cash_input'] = True
+        
+        # Помечаем в БД что ожидаем ввод кассы
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        cur.execute('''
+            UPDATE shifts 
+            SET awaiting_cash_input = TRUE,
+                end_time = %s
+            WHERE driver_id = %s AND is_active = TRUE
+        ''', (end_time, user_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        bot.send_message(message.chat.id, 
+                       f"⏱ Отработано: {time_str}\n"
+                       "💵 Введите сумму в кассе:")
     
     elif message.text == '📊 Мои смены':
         shifts = get_user_shifts_grouped_by_date(user_id)
@@ -339,5 +598,43 @@ def handle_buttons(message):
         
         bot.send_message(message.chat.id, response)
 
+# Запуск бота с восстановлением состояний
 print("✅ Бот запущен с PostgreSQL!")
-bot.polling()
+
+# Очищаем старые зависшие состояния
+cleanup_old_states()
+
+# Восстанавливаем активные смены из БД при запуске
+print("🔄 Восстанавливаем активные смены из БД...")
+conn = psycopg2.connect(os.environ['DATABASE_URL'])
+cur = conn.cursor(cursor_factory=RealDictCursor)
+cur.execute("SELECT DISTINCT driver_id FROM shifts WHERE is_active = TRUE")
+active_drivers = cur.fetchall()
+cur.close()
+conn.close()
+
+for driver in active_drivers:
+    user_id = driver['driver_id']
+    get_user_state(user_id)  # Это восстановит состояние из БД
+    print(f"   Восстановлена смена для водителя {user_id}")
+
+print(f"✅ Восстановлено {len(active_drivers)} активных смен")
+
+import time
+
+while True:
+    try:
+        print("🤖 Запускаю бота...")
+        bot.polling(
+            none_stop=True,      # не останавливаться при ошибках
+            interval=3,          # интервал между запросами
+            timeout=30,          # таймаут соединения
+            long_polling_timeout=20  # таймаут long-polling
+        )
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен пользователем")
+        break
+    except Exception as e:
+        print(f"⚠️ Ошибка: {e}")
+        print("🔄 Перезапуск через 15 секунд...")
+        time.sleep(15)
