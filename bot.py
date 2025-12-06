@@ -99,6 +99,8 @@ def init_database():
     conn.close()
     print("🎉 Инициализация БД завершена!")
 
+init_database()
+
 # --- Константы и утилиты ---
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
@@ -156,8 +158,9 @@ motivational_messages = [
 bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 # --- Состояния пользователей ---
+user_states = {}
+
 def get_user_state(user_id):
-    user_states = {}
     """Возвращает состояние пользователя, создаёт если нет. Восстанавливает из БД если есть активная смена."""
     # Если уже есть в памяти - возвращаем
     if user_id in user_states:
@@ -270,6 +273,18 @@ def get_active_shift(user_id):
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     cur = conn.cursor(cursor_factory=RealDictCursor)
     
+    # Сначала проверяем есть ли поле is_active
+    cur.execute('''
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name='shifts' AND column_name='is_active'
+    ''')
+    
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
+        return None
+    
     cur.execute('''
         SELECT * FROM shifts 
         WHERE driver_id = %s 
@@ -288,123 +303,157 @@ def start_shift_in_db(user_id, start_time):
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     cur = conn.cursor()
     
-    # Сначала завершаем старые активные смены (на всякий случай)
-    cur.execute('''
-        UPDATE shifts 
-        SET is_active = FALSE 
-        WHERE driver_id = %s AND is_active = TRUE
-    ''', (user_id,))
-    
-    # Создаем новую смену
-    cur.execute('''
-        INSERT INTO shifts 
-        (driver_id, start_time, end_time, cash, hourly_rate, is_active)
-        VALUES (%s, %s, %s, 0, 0, TRUE)
-        RETURNING id
-    ''', (user_id, start_time, start_time))
-    
-    shift_id = cur.fetchone()[0]
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    print(f"✅ Смена #{shift_id} создана для пользователя {user_id}")
-    return shift_id
-
-def update_shift_pause(user_id, is_paused, pause_start_time=None):
-    """Обновляет состояние паузы в активной смене"""
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    cur = conn.cursor()
-    
-    if is_paused:
+    try:
+        # Сначала завершаем старые активные смены (на всякий случай)
         cur.execute('''
             UPDATE shifts 
-            SET is_paused = TRUE, 
-                pause_start_time = %s
-            WHERE driver_id = %s 
-              AND is_active = TRUE
-        ''', (pause_start_time, user_id))
-    else:
-        # Снимаем паузу и обновляем общее время пауз
-        cur.execute('''
-            UPDATE shifts 
-            SET is_paused = FALSE,
-                pause_duration_seconds = pause_duration_seconds + 
-                    EXTRACT(EPOCH FROM (NOW() - pause_start_time))
-            WHERE driver_id = %s 
-              AND is_active = TRUE
+            SET is_active = FALSE 
+            WHERE driver_id = %s AND is_active = TRUE
         ''', (user_id,))
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    print(f"✅ Пауза обновлена для пользователя {user_id}")
-
-def complete_shift_in_db(user_id, end_time, duration_str, cash, hourly_rate):
-    """Завершает смену в БД"""
-    duration_seconds = int((end_time - datetime.datetime.fromisoformat(str(end_time).replace('Z', '+00:00'))).total_seconds())
-    
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    cur = conn.cursor()
-    
-    cur.execute('''
-        UPDATE shifts 
-        SET end_time = %s,
-            duration_text = %s,
-            duration_seconds = %s,
-            cash = %s,
-            hourly_rate = %s,
-            is_active = FALSE,
-            is_paused = FALSE,
-            awaiting_cash_input = FALSE
-        WHERE driver_id = %s 
-          AND is_active = TRUE
-        RETURNING id
-    ''', (end_time, duration_str, duration_seconds, cash, hourly_rate, user_id))
-    
-    result = cur.fetchone()
-    
-    if result:
-        shift_id = result[0]
+        
+        # Создаем новую смену
+        cur.execute('''
+            INSERT INTO shifts 
+            (driver_id, start_time, end_time, cash, hourly_rate, is_active)
+            VALUES (%s, %s, %s, 0, 0, TRUE)
+            RETURNING id
+        ''', (user_id, start_time, start_time))
+        
+        shift_id = cur.fetchone()[0]
+        
         conn.commit()
         cur.close()
         conn.close()
-        print(f"✅ Смена #{shift_id} завершена для пользователя {user_id}")
-        return True
-    else:
+        
+        print(f"✅ Смена #{shift_id} создана для пользователя {user_id}")
+        return shift_id
+    except Exception as e:
+        print(f"❌ Ошибка при создании смены: {e}")
         conn.rollback()
         cur.close()
         conn.close()
-        print(f"❌ Не найдена активная смена для пользователя {user_id}")
+        return None
+
+def update_shift_pause(user_id, is_paused, pause_start_time=None):
+    """Обновляет состояние паузы в активной смене"""
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        
+        if is_paused:
+            cur.execute('''
+                UPDATE shifts 
+                SET is_paused = TRUE, 
+                    pause_start_time = %s
+                WHERE driver_id = %s 
+                  AND is_active = TRUE
+            ''', (pause_start_time, user_id))
+        else:
+            # Снимаем паузу и обновляем общее время пауз
+            cur.execute('''
+                UPDATE shifts 
+                SET is_paused = FALSE,
+                    pause_duration_seconds = pause_duration_seconds + 
+                        EXTRACT(EPOCH FROM (NOW() - pause_start_time))
+                WHERE driver_id = %s 
+                  AND is_active = TRUE
+            ''', (user_id,))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        print(f"✅ Пауза обновлена для пользователя {user_id}")
+    except Exception as e:
+        print(f"❌ Ошибка при обновлении паузы: {e}")
+
+def complete_shift_in_db(user_id, end_time, duration_str, cash, hourly_rate):
+    """Завершает смену в БД"""
+    try:
+        duration_seconds = int((end_time - datetime.datetime.fromisoformat(str(end_time).replace('Z', '+00:00'))).total_seconds())
+        
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        
+        cur.execute('''
+            UPDATE shifts 
+            SET end_time = %s,
+                duration_text = %s,
+                duration_seconds = %s,
+                cash = %s,
+                hourly_rate = %s,
+                is_active = FALSE,
+                is_paused = FALSE,
+                awaiting_cash_input = FALSE
+            WHERE driver_id = %s 
+              AND is_active = TRUE
+            RETURNING id
+        ''', (end_time, duration_str, duration_seconds, cash, hourly_rate, user_id))
+        
+        result = cur.fetchone()
+        
+        if result:
+            shift_id = result[0]
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"✅ Смена #{shift_id} завершена для пользователя {user_id}")
+            return True
+        else:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            print(f"❌ Не найдена активная смена для пользователя {user_id}")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка при завершении смены: {e}")
         return False
 
 def cleanup_old_states():
     """Очищает зависшие состояния (например, смены в режиме ожидания кассы больше 24 часов)"""
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    cur = conn.cursor()
-    
-    # Находим смены, которые ожидают ввода кассы больше 24 часов
-    cur.execute('''
-        UPDATE shifts 
-        SET is_active = FALSE,
-            awaiting_cash_input = FALSE,
-            end_time = start_time + INTERVAL '1 hour'
-        WHERE is_active = TRUE 
-          AND awaiting_cash_input = TRUE
-          AND created_at < NOW() - INTERVAL '24 hours'
-        RETURNING id, driver_id
-    ''')
-    
-    cleaned = cur.fetchall()
-    
-    if cleaned:
-        print(f"🔄 Очищено {len(cleaned)} зависших состояний: {cleaned}")
-    
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        
+        # Проверяем есть ли поле is_active в таблице
+        cur.execute('''
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='shifts' AND column_name='is_active'
+        ''')
+        
+        if not cur.fetchone():
+            print("⚠️ Поле is_active отсутствует, очистка не требуется")
+            cur.close()
+            conn.close()
+            return
+        
+        # Находим смены, которые ожидают ввода кассы больше 24 часов
+        cur.execute('''
+            UPDATE shifts 
+            SET is_active = FALSE,
+                awaiting_cash_input = FALSE,
+                end_time = start_time + INTERVAL '1 hour'
+            WHERE is_active = TRUE 
+              AND awaiting_cash_input = TRUE
+              AND created_at < NOW() - INTERVAL '24 hours'
+            RETURNING id, driver_id
+        ''')
+        
+        cleaned = cur.fetchall()
+        
+        if cleaned:
+            print(f"🔄 Очищено {len(cleaned)} зависших состояний: {cleaned}")
+        else:
+            print("✅ Нет зависших состояний для очистки")
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка при очистке старых состояний: {e}")
+        # Не падаем, продолжаем работу
 
 # --- Мотивация ---
 def send_motivation(chat_id, user_id):
@@ -600,17 +649,20 @@ def handle_buttons(message):
         state['awaiting_cash_input'] = True
         
         # Помечаем в БД что ожидаем ввод кассы
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        cur = conn.cursor()
-        cur.execute('''
-            UPDATE shifts 
-            SET awaiting_cash_input = TRUE,
-                end_time = %s
-            WHERE driver_id = %s AND is_active = TRUE
-        ''', (end_time, user_id))
-        conn.commit()
-        cur.close()
-        conn.close()
+        try:
+            conn = psycopg2.connect(os.environ['DATABASE_URL'])
+            cur = conn.cursor()
+            cur.execute('''
+                UPDATE shifts 
+                SET awaiting_cash_input = TRUE,
+                    end_time = %s
+                WHERE driver_id = %s AND is_active = TRUE
+            ''', (end_time, user_id))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"❌ Ошибка при обновлении БД: {e}")
         
         bot.send_message(message.chat.id, 
                        f"⏱ Отработано: {time_str}\n"
@@ -648,7 +700,7 @@ def handle_buttons(message):
         
         bot.send_message(message.chat.id, response)
 
-# Запуск бота с восстановлением состояний
+# --- Запуск бота ---
 print("✅ Бот запущен с PostgreSQL!")
 
 # Очищаем старые зависшие состояния
@@ -656,19 +708,36 @@ cleanup_old_states()
 
 # Восстанавливаем активные смены из БД при запуске
 print("🔄 Восстанавливаем активные смены из БД...")
-conn = psycopg2.connect(os.environ['DATABASE_URL'])
-cur = conn.cursor(cursor_factory=RealDictCursor)
-cur.execute("SELECT DISTINCT driver_id FROM shifts WHERE is_active = TRUE")
-active_drivers = cur.fetchall()
-cur.close()
-conn.close()
-
-for driver in active_drivers:
-    user_id = driver['driver_id']
-    get_user_state(user_id)  # Это восстановит состояние из БД
-    print(f"   Восстановлена смена для водителя {user_id}")
-
-print(f"✅ Восстановлено {len(active_drivers)} активных смен")
+try:
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    # Проверяем есть ли поле is_active
+    cur.execute('''
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name='shifts' AND column_name='is_active'
+    ''')
+    
+    if cur.fetchone():
+        # Поле есть - ищем активные смены
+        cur.execute("SELECT DISTINCT driver_id FROM shifts WHERE is_active = TRUE")
+        active_drivers = cur.fetchall()
+        
+        for driver in active_drivers:
+            user_id = driver['driver_id']
+            get_user_state(user_id)  # Это восстановит состояние из БД
+            print(f"   Восстановлена смена для водителя {user_id}")
+        
+        print(f"✅ Восстановлено {len(active_drivers)} активных смен")
+    else:
+        print("⚠️ Поле is_active отсутствует, восстановление не требуется")
+    
+    cur.close()
+    conn.close()
+    
+except Exception as e:
+    print(f"⚠️ Ошибка при восстановлении смен: {e}")
 
 import time
 
