@@ -270,6 +270,14 @@ def main():
     st.title("🚕 Админ-панель Такси-бота")
     st.markdown("---")
     
+        # Если показываем статистику
+    if st.session_state.get('show_stats'):
+        if st.button("← Назад к списку", key="back_from_stats"):
+            st.session_state.show_stats = False
+            st.rerun()
+        show_general_stats()
+        return
+    
     # Инициализация состояния пагинации
     if 'page' not in st.session_state:
         st.session_state.page = 0
@@ -283,7 +291,12 @@ def main():
         }
     
     # Если выбрана смена - показываем детальную карточку
+        # Если выбрана смена - показываем детальную карточку
     if st.session_state.selected_shift_id:
+        # Добавляем кнопку назад ПЕРЕД вызовом функции деталей
+        if st.button("← Назад к списку", key="back_to_list_main"):
+            st.session_state.selected_shift_id = None
+            st.rerun()
         show_shift_detail(st.session_state.selected_shift_id)
         return
     
@@ -491,11 +504,6 @@ def main():
 
 def show_shift_detail(shift_id):
     """Показывает детальную информацию о смене"""
-    st.button("← Назад к списку", 
-              on_click=lambda: st.session_state.update(
-                  {'selected_shift_id': None}
-              ),
-              key=f"back_from_detail_{shift_id}")
     
     shift = get_shift_by_id(shift_id)
     if not shift:
@@ -586,7 +594,10 @@ def show_general_stats():
     with col1:
         st.metric("Всего смен", total_shifts)
     with col2:
-        st.metric("Активных смен", active_shifts)
+        st.metric("Активных смен", active_shifts),
+        if st.button("📊 Общая статистика", key="show_stats_btn"):
+            st.session_state.show_stats = True
+            st.rerun()
     with col3:
         st.metric("Общая касса", f"{total_cash:,} руб")
     with col4:
@@ -803,12 +814,6 @@ def show_delete_form(shift):
 
 def show_export_data():
     """Форма экспорта данных"""
-    st.button("← Назад к списку", 
-              on_click=lambda: st.session_state.update(
-                  {'show_export': False}
-              ),
-              key="back_from_export")
-    
     st.subheader("📤 Экспорт данных")
     
     col1, col2, col3 = st.columns(3)
@@ -885,9 +890,6 @@ def show_export_data():
                     st.warning("Нет данных для выбранного диапазона")
             else:
                 st.warning("Нет данных для экспорта")
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
