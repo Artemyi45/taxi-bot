@@ -7,12 +7,7 @@ import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Добавь в начало бота после инициализации
-print("🧪 Тест часового пояса:")
-test_time = get_moscow_time()
-print(f"Московское время: {test_time}")
-print(f"UTC время: {test_time.astimezone(pytz.UTC)}")
-print(f"Naive для БД: {ensure_timezone_naive(test_time)}")
+
 
 # --- Инициализация БД ---
 def init_database():
@@ -986,3 +981,9 @@ while True:
         print("🔄 Перезапуск через 15 секунд...")
         time.sleep(15)
 
+# Добавь в начало бота после инициализации
+print("🧪 Тест часового пояса:")
+test_time = get_moscow_time()
+print(f"Московское время: {test_time}")
+print(f"UTC время: {test_time.astimezone(pytz.UTC)}")
+print(f"Naive для БД: {ensure_timezone_naive(test_time)}")
