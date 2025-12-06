@@ -1060,10 +1060,11 @@ def show_add_shift_form():
         duration_str = f"{minutes} мин"
     
     # Расчёт среднего часа
-    if hours > 0:
-        hourly_rate = int(cash / hours) if hours > 0 else 0
+    if total_seconds > 0:
+        exact_hours = total_seconds / 3600  # Дробные часы (например 2.95)
+        hourly_rate = int(cash / exact_hours)
     else:
-        hourly_rate = int(cash / (total_seconds / 3600)) if total_seconds > 0 else 0
+        hourly_rate = 0
     
     st.markdown("---")
     st.markdown("**📊 Итог:**")
