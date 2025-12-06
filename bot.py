@@ -510,38 +510,24 @@ def update_shift_pause(user_id, is_paused, pause_start_time=None):
     except Exception as e:
         print(f"❌ Ошибка при обновлении паузы: {e}")
 
-def complete_shift_in_db(user_id, end_time, duration_str, cash, hourly_rate):
+def complete_shift_in_db(user_id, start_time, end_time, duration_str, cash, hourly_rate):
     """Завершает смену в БД"""
     try:
-        # Конвертируем end_time в offset-naive для БД
+        # Конвертируем времена в offset-naive для БД
+        start_time_naive = ensure_timezone_naive(start_time)
         end_time_naive = ensure_timezone_naive(end_time)
-        
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        cur = conn.cursor()
-        
-        # Сначала получаем start_time
-        cur.execute('''
-            SELECT start_time FROM shifts 
-            WHERE driver_id = %s AND is_active = TRUE
-        ''', (user_id,))
-        
-        result = cur.fetchone()
-        if not result:
-            print(f"❌ Не найдена активная смена для пользователя {user_id}")
-            cur.close()
-            conn.close()
-            return False
-        
-        start_time = result[0]
-        start_time_naive = ensure_timezone_naive(start_time) if isinstance(start_time, datetime.datetime) else start_time
         
         # Считаем длительность
         duration_seconds = int((end_time_naive - start_time_naive).total_seconds())
         
-        # Завершаем смену
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        
+        # Завершаем смену, обновляя start_time
         cur.execute('''
             UPDATE shifts 
-            SET end_time = %s,
+            SET start_time = %s,
+                end_time = %s,
                 duration_text = %s,
                 duration_seconds = %s,
                 cash = %s,
@@ -552,7 +538,7 @@ def complete_shift_in_db(user_id, end_time, duration_str, cash, hourly_rate):
             WHERE driver_id = %s 
               AND is_active = TRUE
             RETURNING id
-        ''', (end_time_naive, duration_str, duration_seconds, cash, hourly_rate, user_id))
+        ''', (start_time_naive, end_time_naive, duration_str, duration_seconds, cash, hourly_rate, user_id))
         
         shift_id = cur.fetchone()[0]
         conn.commit()
@@ -710,11 +696,11 @@ def handle_cash_input(message):
             # Завершаем смену в БД
             success = complete_shift_in_db(
                 user_id,
+                data['start_time'],  # Скорректированное время начала
                 data['end_time'],
                 data['duration_str'],
                 cash,
-                hourly_rate_rounded
-            )
+                hourly_rate_rounded)
             
             if success:
                 # Сбрасываем состояние
