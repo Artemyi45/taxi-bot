@@ -7,6 +7,13 @@ import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+# Добавь в начало бота после инициализации
+print("🧪 Тест часового пояса:")
+test_time = get_moscow_time()
+print(f"Московское время: {test_time}")
+print(f"UTC время: {test_time.astimezone(pytz.UTC)}")
+print(f"Naive для БД: {ensure_timezone_naive(test_time)}")
+
 # --- Инициализация БД ---
 def init_database():
     """Создаёт таблицы если их нет"""
@@ -104,7 +111,9 @@ init_database()
 # --- Константы и утилиты ---
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
-    return datetime.datetime.now(MOSCOW_TZ)
+    """Возвращает текущее время по Москве (UTC+3)"""
+    utc_now = datetime.datetime.now(pytz.UTC)
+    return utc_now.astimezone(MOSCOW_TZ)
 
 def format_seconds_to_words(seconds):
     """Переводит секунды в '8 часов 25 минут' с правильным склонением"""
