@@ -973,7 +973,26 @@ def show_add_shift_form():
         with col_start1:
             start_date = st.date_input("Дата начала", value=datetime.now().date(), key="add_start_date")
         with col_start2:
-            start_time = st.time_input("Время начала", value=datetime.now().time(), key="add_start_time")
+            # Используем текстовое поле для времени
+            start_time_str = st.text_input(
+                "ЧЧ:ММ",
+                value=datetime.now().strftime("%H:%M"),
+                key="add_start_time",
+                max_chars=5,
+                help="Формат: ЧЧ:ММ"
+            )
+        
+        # Парсим время
+        try:
+            if ':' in start_time_str:
+                hour, minute = map(int, start_time_str.split(':'))
+                start_time = datetime.time(hour % 24, minute % 60)
+            else:
+                start_time = datetime.time(0, 0)
+                st.warning("Используйте формат ЧЧ:ММ. Установлено 00:00")
+        except:
+            start_time = datetime.time(0, 0)
+            st.warning("Некорректное время. Установлено 00:00")
         
         start_datetime = datetime.combine(start_date, start_time)
     
@@ -991,13 +1010,34 @@ def show_add_shift_form():
         with col_end1:
             end_date = st.date_input("Дата окончания", value=datetime.now().date(), key="add_end_date")
         with col_end2:
-            end_time = st.time_input("Время окончания", value=datetime.now().time(), key="add_end_time")
+            # Используем текстовое поле для времени
+            end_time_str = st.text_input(
+                "ЧЧ:ММ",
+                value=(datetime.now() + timedelta(hours=1)).strftime("%H:%M"),
+                key="add_end_time",
+                max_chars=5,
+                help="Формат: ЧЧ:ММ"
+            )
+        
+        # Парсим время
+        try:
+            if ':' in end_time_str:
+                hour, minute = map(int, end_time_str.split(':'))
+                end_time = datetime.time(hour % 24, minute % 60)
+            else:
+                end_time = datetime.time(0, 0)
+                st.warning("Используйте формат ЧЧ:ММ. Установлено 00:00")
+        except:
+            end_time = datetime.time(0, 0)
+            st.warning("Некорректное время. Установлено 00:00")
         
         end_datetime = datetime.combine(end_date, end_time)
     
     # Проверка времени
     if end_datetime <= start_datetime:
         st.error("❌ Время окончания должно быть позже времени начала!")
+        st.info(f"Начало: {start_datetime.strftime('%d.%m.%Y %H:%M')}")
+        st.info(f"Окончание: {end_datetime.strftime('%d.%m.%Y %H:%M')}")
         return
     
     # Расчёт продолжительности
@@ -1017,7 +1057,6 @@ def show_add_shift_form():
     if hours > 0:
         hourly_rate = int(cash / hours) if hours > 0 else 0
     else:
-        # Если меньше часа, считаем по часам как есть
         hourly_rate = int(cash / (total_seconds / 3600)) if total_seconds > 0 else 0
     
     st.markdown("---")
@@ -1037,6 +1076,11 @@ def show_add_shift_form():
     
     with col2:
         if st.button("💾 Сохранить смену", type="primary", use_container_width=True):
+            # Проверяем корректность времени
+            if ':' not in start_time_str or ':' not in end_time_str:
+                st.error("❌ Используйте формат ЧЧ:ММ для времени")
+                return
+            
             success = save_manual_shift(
                 driver_id=driver_id,
                 start_time=start_datetime,
