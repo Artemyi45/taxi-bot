@@ -147,7 +147,7 @@ def ensure_timezone_naive(dt):
     if dt is None:
         return None
     if dt.tzinfo is not None:
-        return dt.astimezone(pytz.UTC).replace(tzinfo=None)
+        return dt.replace(tzinfo=None)  # ✅ ПРОСТО УДАЛЯЕМ ТАЙМЗОНУ
     return dt
 
 # --- Мотивационные сообщения ---
