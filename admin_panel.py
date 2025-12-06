@@ -986,12 +986,12 @@ def show_add_shift_form():
         try:
             if ':' in start_time_str:
                 hour, minute = map(int, start_time_str.split(':'))
-                start_time = datetime.time(hour % 24, minute % 60)
+                start_time = time(hour % 24, minute % 60)
             else:
                 start_time = datetime.time(0, 0)
                 st.warning("Используйте формат ЧЧ:ММ. Установлено 00:00")
         except:
-            start_time = datetime.time(0, 0)
+            start_time = time(0, 0)
             st.warning("Некорректное время. Установлено 00:00")
         
         start_datetime = datetime.combine(start_date, start_time)
