@@ -314,47 +314,242 @@ def main():
     st.title("🚕 Админ-панель Такси-бота")
     st.markdown("---")
     
-    # ===== ПРОВЕРКА НА ПОКАЗ СПЕЦИАЛЬНЫХ РЕЖИМОВ =====
-    # Эти режимы ВЗАИМОИСКЛЮЧАЮЩИЕ, поэтому используем if-elif
-    
-    if st.session_state.get('show_add_shift'):
-        show_add_shift_form()
-        return
-    
-    elif st.session_state.get('show_stats'):
-        show_general_stats()
-        # Кнопка "Назад" теперь внутри show_general_stats
-        return
-    
-    elif st.session_state.get('show_export'):
-        show_export_data()
-        return
-    
-    # Инициализация состояния пагинации
+    # Инициализация состояний
     if 'page' not in st.session_state:
         st.session_state.page = 0
     if 'selected_shift_id' not in st.session_state:
         st.session_state.selected_shift_id = None
     if 'filters' not in st.session_state:
-        st.session_state.filters = {
-            'driver_id': None,
-            'start_date': None,
-            'end_date': None
-        }
+        st.session_state.filters = {'driver_id': None, 'start_date': None, 'end_date': None}
+    if 'show_add_shift' not in st.session_state:
+        st.session_state.show_add_shift = False
+    if 'show_stats' not in st.session_state:
+        st.session_state.show_stats = False
+    if 'show_export' not in st.session_state:
+        st.session_state.show_export = False
     
-    # Если выбрана смена - показываем детальную карточку
+    # ===== РЕЖИМЫ РАБОТЫ =====
+    # Проверяем, какой режим активен
+    
+    # 1. Режим добавления смены
+    if st.session_state.show_add_shift:
+        show_add_shift_form()
+        return
+    
+    # 2. Режим статистики
+    if st.session_state.show_stats:
+        show_general_stats()
+        return
+    
+    # 3. Режим экспорта
+    if st.session_state.show_export:
+        show_export_data()
+        return
+    
+    # 4. Режим деталей смены
     if st.session_state.selected_shift_id:
-        # Добавляем кнопку назад ПЕРЕД вызовом функции деталей
-        if st.button("← Назад к списку", key="back_to_list_main"):
-            st.session_state.selected_shift_id = None
-            st.rerun()
         show_shift_detail(st.session_state.selected_shift_id)
         return
+    
+    # ===== ОСНОВНОЙ РЕЖИМ - СПИСОК СМЕН =====
     
     # ===== ФИЛЬТРЫ =====
     st.subheader("🔍 Фильтры")
     
-    # ... остальной код ФИЛЬТРОВ БЕЗ ИЗМЕНЕНИЙ ...
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        filter_driver = st.number_input(
+            "ID водителя (оставьте 0 для всех)",
+            min_value=0,
+            value=st.session_state.filters.get('driver_id', 0),
+            key="filter_driver_input"
+        )
+    
+    with col2:
+        filter_start_date = st.date_input(
+            "Дата с",
+            value=st.session_state.filters.get('start_date') or (datetime.now().date() - timedelta(days=30)),
+            key="filter_start_input"
+        )
+    
+    with col3:
+        filter_end_date = st.date_input(
+            "Дата по",
+            value=st.session_state.filters.get('end_date') or datetime.now().date(),
+            key="filter_end_input"
+        )
+    
+    # Кнопки фильтров
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Применить фильтры", type="primary", key="apply_filters"):
+            st.session_state.filters = {
+                'driver_id': filter_driver if filter_driver > 0 else None,
+                'start_date': filter_start_date,
+                'end_date': filter_end_date
+            }
+            st.session_state.page = 0
+            st.rerun()
+    
+    with col2:
+        if st.button("Сбросить фильтры", type="secondary", key="reset_filters"):
+            st.session_state.filters = {'driver_id': None, 'start_date': None, 'end_date': None}
+            st.session_state.page = 0
+            st.rerun()
+    
+    with col3:
+        # Быстрая статистика
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        stats_query = "SELECT COUNT(*) as total, SUM(cash) as total_cash FROM shifts WHERE 1=1"
+        stats_params = []
+        
+        if st.session_state.filters['driver_id']:
+            stats_query += " AND driver_id = %s"
+            stats_params.append(st.session_state.filters['driver_id'])
+        
+        if st.session_state.filters['start_date']:
+            stats_query += " AND DATE(start_time) >= %s"
+            stats_params.append(st.session_state.filters['start_date'])
+        
+        if st.session_state.filters['end_date']:
+            stats_query += " AND DATE(start_time) <= %s"
+            stats_params.append(st.session_state.filters['end_date'])
+        
+        cur.execute(stats_query, stats_params)
+        stats = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        st.metric("Найдено смен", stats[0] if stats else 0)
+    
+    st.markdown("---")
+    
+    # ===== ТАБЛИЦА СМЕН =====
+    col_title, col_button = st.columns([3, 1])
+    with col_title:
+        st.subheader("📋 Все смены")
+    with col_button:
+        if st.button("➕ Добавить смену", type="primary"):
+            st.session_state.show_add_shift = True
+            st.rerun()
+    
+    # Получаем смены для текущей страницы
+    shifts, total = get_all_shifts_paginated(
+        offset=st.session_state.page * 20,
+        limit=20,
+        driver_id=st.session_state.filters['driver_id'],
+        start_date=st.session_state.filters['start_date'],
+        end_date=st.session_state.filters['end_date']
+    )
+    
+    if shifts:
+        # Создаем DataFrame
+        df = pd.DataFrame(shifts)
+        
+        # Форматируем данные
+        df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
+        df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
+        
+        # Добавляем колонку статуса
+        df['status'] = df.apply(
+            lambda row: '🟢 Активна' if row['is_active'] else ('⏸ На паузе' if row['is_paused'] else '✅ Завершена'),
+            axis=1
+        )
+        
+        # Показываем таблицу с возможностью выбора
+        for _, shift in df.iterrows():
+            col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 2, 2, 2, 2, 1])
+            
+            with col1:
+                st.markdown(f"**#{shift['id']}**")
+            
+            with col2:
+                st.markdown(f"👤 {shift['driver_id']}")
+            
+            with col3:
+                st.markdown(f"📅 {shift['start_time']}")
+            
+            with col4:
+                st.markdown(f"⏱ {shift['duration_text'] or '—'}")
+            
+            with col5:
+                st.markdown(f"💰 {shift['cash']:,} руб")
+            
+            with col6:
+                st.markdown(f"📊 {shift['hourly_rate'] or 0:,} руб/ч")
+            
+            with col7:
+                if st.button("👁️", key=f"view_{shift['id']}"):
+                    st.session_state.selected_shift_id = shift['id']
+                    st.rerun()
+            
+            st.divider()
+        
+        # ===== ПАГИНАЦИЯ =====
+        st.markdown("---")
+        total_pages = (total + 19) // 20
+        
+        if total_pages > 1:
+            st.write(f"Страница {st.session_state.page + 1} из {total_pages} (всего {total} смен)")
+            
+            cols = st.columns(5)
+            
+            with cols[0]:
+                if st.button("⏮️ Первая", disabled=st.session_state.page == 0):
+                    st.session_state.page = 0
+                    st.rerun()
+            
+            with cols[1]:
+                if st.button("◀️ Назад", disabled=st.session_state.page == 0):
+                    st.session_state.page -= 1
+                    st.rerun()
+            
+            with cols[2]:
+                page_num = st.number_input(
+                    "Страница",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=st.session_state.page + 1,
+                    key="page_input"
+                )
+                if page_num != st.session_state.page + 1:
+                    st.session_state.page = page_num - 1
+                    st.rerun()
+            
+            with cols[3]:
+                if st.button("Вперед ▶️", disabled=st.session_state.page >= total_pages - 1):
+                    st.session_state.page += 1
+                    st.rerun()
+            
+            with cols[4]:
+                if st.button("Последняя ⏭️", disabled=st.session_state.page >= total_pages - 1):
+                    st.session_state.page = total_pages - 1
+                    st.rerun()
+    else:
+        st.info("🚫 Смены не найдены")
+    
+    # ===== БЫСТРЫЕ ДЕЙСТВИЯ =====
+    st.markdown("---")
+    st.subheader("⚡ Быстрые действия")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 Обновить страницу"):
+            st.rerun()
+    
+    with col2:
+        if st.button("📊 Общая статистика"):
+            st.session_state.show_stats = True
+            st.rerun()
+    
+    with col3:
+        if st.button("📤 Экспорт данных"):
+            st.session_state.show_export = True
+            st.rerun()
 
 def show_shift_detail(shift_id):
     """Показывает детальную информацию о смене"""
