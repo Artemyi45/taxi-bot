@@ -656,13 +656,7 @@ def show_shift_menu(message):
         # Смена активна
         if state['is_paused']:
             # На паузе
-            work_duration = state['pause_start_time'] - state['shift_start_time']
-            pause_duration = get_moscow_time() - state['pause_start_time']
-            
-            time_str = format_duration(work_duration.total_seconds())
-            pause_str = format_duration(pause_duration.total_seconds())
-            
-            status_text = f"⏱ Отработано: {time_str}\n⏸ На паузе: {pause_str}"
+            status_text = "⏸ Смена на паузе"
             
             button_continue = types.KeyboardButton('▶ Продолжить')
             button_end = types.KeyboardButton('✅ Завершить смену')
@@ -670,10 +664,7 @@ def show_shift_menu(message):
             
         else:
             # Активна, не на паузе
-            work_duration = get_moscow_time() - state['shift_start_time']
-            time_str = format_duration(work_duration.total_seconds())
-            
-            status_text = f"⏱ Отработано: {time_str}"
+            status_text = "🟢 Смена активна"
             
             button_pause = types.KeyboardButton('⏸ Пауза/продолжить')
             button_end = types.KeyboardButton('✅ Завершить смену')
@@ -839,7 +830,6 @@ def handle_buttons(message):
                     state['awaiting_cash_input'] = False
                     
                     bot.send_message(message.chat.id, "✅ Смена начата! 🚕")
-                    send_motivation(message.chat.id, user_id)
                     # Возвращаем в меню СМЕНА
                     show_shift_menu(message)
                 else:
