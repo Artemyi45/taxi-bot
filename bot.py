@@ -732,7 +732,17 @@ def handle_main_menu(message):
         markup.row(button_back)
         bot.send_message(message.chat.id, "🎯 Раздел: План\n(в разработке)", reply_markup=markup)
     elif message.text == '◀️ Назад':
-
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        button_shift = types.KeyboardButton('🚗 Смена')
+        button_reports = types.KeyboardButton('📊 Отчеты')
+        button_plan = types.KeyboardButton('🎯 План')
+        markup.row(button_shift, button_reports, button_plan)
+        
+        bot.send_message(
+            message.chat.id, 
+            'Выбери раздел:',  # БЕЗ приветствия!
+            reply_markup=markup
+        )
 @bot.message_handler(func=lambda message: 
     get_user_state(message.from_user.id).get('awaiting_cash_input', False) == True)
 def handle_cash_input(message):
