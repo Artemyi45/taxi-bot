@@ -638,55 +638,6 @@ def send_welcome(message):
                     '🚕 Тебя приветствует Вован - бот, помощник таксиста\nВыбери раздел:',
                     reply_markup=markup)
 
-
-    user_id = message.from_user.id
-    state = get_user_state(user_id)
-    
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    
-    if not state['is_working']:
-        # Смена не активна
-        button_start = types.KeyboardButton('Начать смену')
-        button_pause = types.KeyboardButton('Пауза/Продолжить')
-        button_end = types.KeyboardButton('Завершить смену')
-        markup.row(button_start)
-        markup.row(button_pause, button_end)
-    else:
-        # Смена активна
-        if state['is_paused']:
-            # На паузе
-            work_duration = state['pause_start_time'] - state['shift_start_time']
-            pause_duration = get_moscow_time() - state['pause_start_time']
-            
-            time_str = format_duration(work_duration.total_seconds())
-            pause_str = format_duration(pause_duration.total_seconds())
-            
-            status_text = f"⏱ Отработано: {time_str}\n⏸ На паузе: {pause_str}"
-            
-            button_continue = types.KeyboardButton('▶ Продолжить')
-            button_end = types.KeyboardButton('Завершить смену')
-            markup.row(button_continue, button_end)
-        else:
-            # Активна, не на паузе
-            work_duration = get_moscow_time() - state['shift_start_time']
-            time_str = format_duration(work_duration.total_seconds())
-            
-            status_text = f"⏱ Отработано: {time_str}"
-            
-            button_pause = types.KeyboardButton('⏸ ПАУЗА/ПРОДОЛЖИТЬ')
-            button_end = types.KeyboardButton('✅ ЗАВЕРШИТЬ СМЕНУ')
-            markup.row(button_pause, button_end)
-    
-    # Кнопка "Назад" всегда
-    button_back = types.KeyboardButton('◀️ НАЗАД')
-    markup.row(button_back)
-    
-    # Отправляем сообщение
-    if 'status_text' in locals():
-        bot.send_message(message.chat.id, status_text, reply_markup=markup)
-    else:
-        bot.send_message(message.chat.id, "🚗 РАЗДЕЛ: СМЕНА", reply_markup=markup)
-
 def show_shift_menu(message):
     """Показывает меню управления сменой"""
     user_id = message.from_user.id
@@ -734,24 +685,6 @@ def show_shift_menu(message):
     
     # Отправляем сообщение
     bot.send_message(message.chat.id, status_text, reply_markup=markup)
-
-
-    if message.text == '🚗 Смена':
-        show_shift_menu(message)
-    elif message.text == '📊 Отчеты':
-        # Пока заглушка
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        button_back = types.KeyboardButton('◀️ Назад')
-        markup.row(button_back)
-        bot.send_message(message.chat.id, "📊 Раздел: отчеты\n(в разработке)", reply_markup=markup)
-    elif message.text == '🎯 План':
-        # Пока заглушка
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        button_back = types.KeyboardButton('◀️ Назад')
-        markup.row(button_back)
-        bot.send_message(message.chat.id, "🎯 Раздел: план\n(в разработке)", reply_markup=markup)
-    elif message.text == '◀️ Назад':
-        send_welcome(message)
 
 @bot.message_handler(func=lambda message: message.text in ['🚗 Смена', '📊 Отчеты', '🎯 План', '◀️ Назад'])
 def handle_main_menu(message):
@@ -1235,9 +1168,3 @@ while True:
         print("🔄 Перезапуск через 15 секунд...")
         time.sleep(15)
 
-# Добавь в начало бота после инициализации
-print("🧪 Тест часового пояса:")
-test_time = get_moscow_time()
-print(f"Московское время: {test_time}")
-print(f"UTC время: {test_time.astimezone(pytz.UTC)}")
-print(f"Naive для БД: {ensure_timezone_naive(test_time)}")
