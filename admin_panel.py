@@ -388,6 +388,7 @@ def parse_datetime(dt_value):
 def main():
     check_auth()
     
+    # Проверка связи с БД
     try:
         conn = get_connection()
         cur = conn.cursor()
@@ -399,9 +400,6 @@ def main():
         st.error(f"❌ Ошибка подключения к БД: {e}")
         return
     
-    st.title("🚕 Админ-панель Такси-бота")
-    st.markdown("---")
-
     st.title("🚕 Админ-панель Такси-бота")
     st.markdown("---")
     
@@ -494,7 +492,11 @@ def main():
         conn = get_connection()
         cur = conn.cursor()
         
-        stats_query = "SELECT COUNT(*) as total, SUM(cash) as total_cash FROM shifts WHERE 1=1"
+        stats_query = """
+            SELECT COUNT(*) as total, SUM(cash) as total_cash 
+            FROM shifts 
+            WHERE 1=1
+        """
         stats_params = []
         
         if st.session_state.filters['driver_id']:
@@ -502,11 +504,11 @@ def main():
             stats_params.append(st.session_state.filters['driver_id'])
         
         if st.session_state.filters['start_date']:
-            stats_query += " AND DATE(start_time) >= %s"
+            stats_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') >= %s"
             stats_params.append(st.session_state.filters['start_date'])
         
         if st.session_state.filters['end_date']:
-            stats_query += " AND DATE(start_time) <= %s"
+            stats_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') <= %s"
             stats_params.append(st.session_state.filters['end_date'])
         
         cur.execute(stats_query, stats_params)
@@ -536,7 +538,7 @@ def main():
         end_date=st.session_state.filters['end_date']
     )
     
-        if shifts:
+    if shifts:
         # Создаем DataFrame
         df = pd.DataFrame(shifts)
         
