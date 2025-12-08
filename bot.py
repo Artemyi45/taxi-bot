@@ -1097,6 +1097,39 @@ def handle_buttons(message):
                 show_shift_menu(message)
                 return
         
+                # ===== ОБРАБОТКА МЕНЮ ПЛАНОВ =====
+        if message.text == '📅 План на месяц':
+            show_monthly_plan_menu(message)
+            return
+        elif message.text == '🔄 План на неделю':
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+            button_back = types.KeyboardButton('◀️ Назад к планам')
+            markup.row(button_back)
+            bot.send_message(message.chat.id, "🔄 Раздел: План на неделю\n(в разработке)", reply_markup=markup)
+            return
+        elif message.text == '◀️ Назад к планам':
+            show_plan_menu(message)
+            return
+        elif message.text in ['✏️ Редактировать', '✏️ Установить план']:
+            user_id = message.from_user.id
+            state = get_user_state(user_id)
+            
+            # Включаем режим ожидания ввода плана
+            state['awaiting_plan_input'] = True
+            state['plan_type'] = 'monthly'
+            
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+            button_cancel = types.KeyboardButton('❌ Отмена')
+            markup.row(button_cancel)
+            
+            bot.send_message(
+                message.chat.id,
+                "Введите сумму месячного плана в рублях:\n\n"
+                "Например: 80000",
+                reply_markup=markup
+            )
+            return
+
         # Если смена активна и ожидает кассу, но нет данных - сбрасываем
         if state.get('awaiting_cash_input') and not state.get('pending_shift_data'):
             print(f"⚠️ Сброс состояния ожидания кассы для пользователя {user_id}")
