@@ -6,6 +6,7 @@ import os
 import pytz
 import random
 import psycopg2
+import threading
 from psycopg2.extras import RealDictCursor
 from telebot import types
 
@@ -169,6 +170,62 @@ def ensure_timezone_naive(dt):
 
 # --- Состояния пользователей ---
 user_states = {}
+
+# --- Напоминания о паузах ---
+def start_pause_reminder_checker():
+    """Запускает фоновый поток для проверки пауз"""
+    def checker_loop():
+        while True:
+            time.sleep(60)  # Проверяем каждую минуту
+            check_paused_shifts()
+    
+    thread = threading.Thread(target=checker_loop, daemon=True)
+    thread.start()
+    print("✅ Запущен проверщик напоминаний о паузах")
+
+def check_paused_shifts():
+    """Проверяет смены на паузе и отправляет напоминания"""
+    current_time = get_moscow_time()
+    
+    for user_id, state in list(user_states.items()):  # Используем list для копирования
+        try:
+            if (state.get('is_working') and 
+                state.get('is_paused') and 
+                state.get('pause_start_time')):
+                
+                pause_duration = current_time - state['pause_start_time']
+                total_minutes = int(pause_duration.total_seconds() // 60)
+                
+                # Проверяем, не отправляли ли уже напоминание
+                last_reminder = state.get('last_pause_reminder_minutes', 0)
+                
+                # Напоминание через 1 час (60 минут)
+                if total_minutes >= 60 and last_reminder < 60:
+                    bot.send_message(
+                        user_id,
+                        f"⏰ Напоминание: смена на паузе уже 1 час\n"
+                        f"Не забудь продолжить работу!"
+                    )
+                    state['last_pause_reminder_minutes'] = 60
+                    print(f"⏰ Напоминание отправлено пользователю {user_id} (1 час)")
+                
+                # Напоминание каждые 30 минут после первого часа
+                elif total_minutes >= 90 and (total_minutes - last_reminder) >= 30:
+                    hours = total_minutes // 60
+                    minutes = total_minutes % 60
+                    
+                    time_str = f"{hours} ч" if minutes == 0 else f"{hours} ч {minutes} мин"
+                    
+                    bot.send_message(
+                        user_id,
+                        f"⏰ Напоминание: смена на паузе уже {time_str}\n"
+                        f"Продолжить или завершить смену?"
+                    )
+                    state['last_pause_reminder_minutes'] = total_minutes
+                    print(f"⏰ Напоминание отправлено пользователю {user_id} ({time_str})")
+                    
+        except Exception as e:
+            print(f"⚠️ Ошибка при проверке паузы для {user_id}: {e}")
 
 def get_active_shift(user_id):
     """Получает активную смену пользователя из БД"""
@@ -655,8 +712,21 @@ def show_shift_menu(message):
     else:
         # Смена активна
         if state['is_paused']:
-            # На паузе
-            status_text = "⏸ Смена на паузе"
+            # На паузе - показываем длительность
+            pause_duration = get_moscow_time() - state['pause_start_time']
+            total_minutes = int(pause_duration.total_seconds() // 60)
+            
+            if total_minutes < 60:
+                pause_str = f"{total_minutes} мин"
+            else:
+                hours = total_minutes // 60
+                minutes = total_minutes % 60
+                if minutes == 0:
+                    pause_str = f"{hours} ч"
+                else:
+                    pause_str = f"{hours} ч {minutes} мин"
+            
+            status_text = f"⏸ Смена на паузе ({pause_str})"
             
             button_continue = types.KeyboardButton('▶ Продолжить')
             button_end = types.KeyboardButton('✅ Завершить смену')
@@ -850,7 +920,7 @@ def handle_buttons(message):
                 # Ставим на паузу
                 state['is_paused'] = True
                 state['pause_start_time'] = current_time
-                
+                state['last_pause_reminder_minutes'] = 0
                 # Обновляем в БД
                 update_shift_pause(user_id, True, current_time)
                 
@@ -865,7 +935,7 @@ def handle_buttons(message):
                 state['shift_start_time'] += pause_duration
                 state['is_paused'] = False
                 state['pause_start_time'] = None
-                
+                state['last_pause_reminder_minutes'] = 0
                 # Обновляем в БД
                 update_shift_pause(user_id, False, None)
                 
@@ -1090,7 +1160,8 @@ def handle_buttons(message):
 
 # --- Запуск бота ---
 print("✅ Бот запущен с PostgreSQL!")
-
+start_pause_reminder_checker()
+print("✅ Проверщик напоминаний запущен")
 
 try:
     # Очищаем старые зависшие состояния
