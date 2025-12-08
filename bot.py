@@ -1,11 +1,13 @@
 import telebot
-from telebot import types
 import datetime
+import time
+import traceback
 import os
 import pytz
 import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from telebot import types
 
 
 
@@ -104,6 +106,8 @@ def init_database():
 init_database()
 
 # --- Константы и утилиты ---
+bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
+
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 def get_moscow_time():
     """Возвращает текущее время по Москве (UTC+3)"""
@@ -162,33 +166,6 @@ def ensure_timezone_naive(dt):
     if dt.tzinfo is not None:
         return dt.replace(tzinfo=None)  # ✅ ПРОСТО УДАЛЯЕМ ТАЙМЗОНУ
     return dt
-
-# --- Мотивационные сообщения ---
-motivational_messages = [
-    "Воин, 30 секунд в строю! Ты — повелитель асфальта и король маршрутов! 👑",
-    "30 секунд — и ты уже непобедим! Дорога боится сильных! ⚔️",
-    "Таксюга, ты запустил не просто двигатель — ты запустил механизм успеха! 🚀",
-    "Каждая секунда за рулем — это кирпичик в фундаменте твоего благополучия! 🏗️",
-    "Ты не просто таксист — ты проводник людей к их мечтам! ✨",
-    "30 секунд — и ты уже на 1% ближе к своим целям! 💪",
-    "30 секунд работы! Скоро сможешь купить себе личный светофор! 🚦",
-    "Таксюга, не гони — но и не тормози! Уже 30 секунд в пути! 🚗💨",
-    "30 секунд — и пассажиры уже выстраиваются в очередь к тебе! 📈",
-    "Дорога — это жизнь. Ты не просто едешь — ты живёшь! 🌅",
-    "30 секунд назад ты принял решение изменить свой день. Горжусь тобой! 🤝",
-    "Каждый поворот руля — это новый поворот судьбы! 🌀",
-    "Ты справился с самым сложным — началом! Теперь всё пойдет как по маслу! 🛢️",
-    "30 секунд — и ты уже победил свою лень! Это достойно уважения! 🏆",
-    "Помни: даже самые длинные маршруты начинаются с первого метра! 🛣️",
-    "30 секунд — первая ступень к финансовой свободе! 🤑",
-    "Ты не работаешь — ты создаёшь свою империю на колесах! 🏰",
-    "Каждый клиент — это новая возможность стать лучше! 🌟",
-    "Город спит, а ты — нет. Ты — его ночной ангел-хранитель! 😇",
-    "30 секунд мужества — и ты уже герой для кого-то сегодня! 🦸‍♂️",
-    "Ты даришь людям не просто поездки — ты даришь время! ⏰"
-]
-
-bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
 
 # --- Состояния пользователей ---
 user_states = {}
@@ -616,8 +593,7 @@ def cleanup_old_states():
     except Exception as e:
         print(f"⚠️ Ошибка при очистке старых состояний: {e}")
 
-# --- Мотивация ---
-def send_motivation(chat_id, user_id):
+
     """Отправляет случайное мотивационное сообщение через 3 секунды"""
     import threading
     import time
@@ -659,10 +635,10 @@ def send_welcome(message):
     markup.row(button_shift, button_reports, button_plan)
     
     bot.send_message(message.chat.id, 
-                    '🚕 Тебя приветствует Вован - бот, помощник таксиста\n выбери раздел:',
+                    '🚕 Тебя приветствует Вован - бот, помощник таксиста\nВыбери раздел:',
                     reply_markup=markup)
 
-def show_shift_menu(message):
+
     user_id = message.from_user.id
     state = get_user_state(user_id)
     
@@ -670,9 +646,9 @@ def show_shift_menu(message):
     
     if not state['is_working']:
         # Смена не активна
-        button_start = types.KeyboardButton('🟢 НАЧАТЬ СМЕНУ')
-        button_pause = types.KeyboardButton('⏸ ПАУЗА/ПРОДОЛЖИТЬ')
-        button_end = types.KeyboardButton('✅ ЗАВЕРШИТЬ СМЕНУ')
+        button_start = types.KeyboardButton('Начать смену')
+        button_pause = types.KeyboardButton('Пауза/Продолжить')
+        button_end = types.KeyboardButton('Завершить смену')
         markup.row(button_start)
         markup.row(button_pause, button_end)
     else:
@@ -687,8 +663,8 @@ def show_shift_menu(message):
             
             status_text = f"⏱ Отработано: {time_str}\n⏸ На паузе: {pause_str}"
             
-            button_continue = types.KeyboardButton('▶ ПРОДОЛЖИТЬ')
-            button_end = types.KeyboardButton('✅ ЗАВЕРШИТЬ СМЕНУ')
+            button_continue = types.KeyboardButton('▶ Продолжить')
+            button_end = types.KeyboardButton('Завершить смену')
             markup.row(button_continue, button_end)
         else:
             # Активна, не на паузе
@@ -711,8 +687,55 @@ def show_shift_menu(message):
     else:
         bot.send_message(message.chat.id, "🚗 РАЗДЕЛ: СМЕНА", reply_markup=markup)
 
-@bot.message_handler(func=lambda message: message.text in ['🚗 Смена', '📊 Отчеты', '🎯 План', '◀️ Назад'])
-def handle_main_menu(message):
+def show_shift_menu(message):
+    """Показывает меню управления сменой"""
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    if not state['is_working']:
+        # Смена не активна - только кнопка "Начать"
+        button_start = types.KeyboardButton('🟢 Начать смену')
+        markup.row(button_start)
+        
+        status_text = "🚗 Раздел: Смена"
+        
+    else:
+        # Смена активна
+        if state['is_paused']:
+            # На паузе
+            work_duration = state['pause_start_time'] - state['shift_start_time']
+            pause_duration = get_moscow_time() - state['pause_start_time']
+            
+            time_str = format_duration(work_duration.total_seconds())
+            pause_str = format_duration(pause_duration.total_seconds())
+            
+            status_text = f"⏱ Отработано: {time_str}\n⏸ На паузе: {pause_str}"
+            
+            button_continue = types.KeyboardButton('▶ Продолжить')
+            button_end = types.KeyboardButton('✅ Завершить смену')
+            markup.row(button_continue, button_end)
+            
+        else:
+            # Активна, не на паузе
+            work_duration = get_moscow_time() - state['shift_start_time']
+            time_str = format_duration(work_duration.total_seconds())
+            
+            status_text = f"⏱ Отработано: {time_str}"
+            
+            button_pause = types.KeyboardButton('⏸ Пауза/продолжить')
+            button_end = types.KeyboardButton('✅ Завершить смену')
+            markup.row(button_pause, button_end)
+    
+    # Кнопка "Назад" всегда
+    button_back = types.KeyboardButton('◀️ Назад')
+    markup.row(button_back)
+    
+    # Отправляем сообщение
+    bot.send_message(message.chat.id, status_text, reply_markup=markup)
+
+
     if message.text == '🚗 Смена':
         show_shift_menu(message)
     elif message.text == '📊 Отчеты':
@@ -727,6 +750,25 @@ def handle_main_menu(message):
         button_back = types.KeyboardButton('◀️ Назад')
         markup.row(button_back)
         bot.send_message(message.chat.id, "🎯 Раздел: план\n(в разработке)", reply_markup=markup)
+    elif message.text == '◀️ Назад':
+        send_welcome(message)
+
+@bot.message_handler(func=lambda message: message.text in ['🚗 Смена', '📊 Отчеты', '🎯 План', '◀️ Назад'])
+def handle_main_menu(message):
+    if message.text == '🚗 Смена':
+        show_shift_menu(message)
+    elif message.text == '📊 Отчеты':
+        # Пока заглушка
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        button_back = types.KeyboardButton('◀️ Назад')
+        markup.row(button_back)
+        bot.send_message(message.chat.id, "📊 Раздел: Отчеты\n(в разработке)", reply_markup=markup)
+    elif message.text == '🎯 План':
+        # Пока заглушка
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        button_back = types.KeyboardButton('◀️ Назад')
+        markup.row(button_back)
+        bot.send_message(message.chat.id, "🎯 Раздел: План\n(в разработке)", reply_markup=markup)
     elif message.text == '◀️ Назад':
         send_welcome(message)
 
@@ -850,7 +892,7 @@ def handle_buttons(message):
         
         # ===== ОБРАБОТКА КНОПОК ИЗ РАЗДЕЛА "СМЕНА" =====
         
-        if message.text == '🟢 НАЧАТЬ СМЕНУ':
+        if message.text == '🟢 Начать смену':
             if not state['is_working']:
                 start_time = get_moscow_time()
                 shift_id = start_shift_in_db(user_id, start_time)
@@ -873,7 +915,7 @@ def handle_buttons(message):
                 bot.send_message(message.chat.id, "⚠️ Смена уже начата!")
                 show_shift_menu(message)
         
-        elif message.text in ['⏸ ПАУЗА/ПРОДОЛЖИТЬ', '▶ ПРОДОЛЖИТЬ']:
+        elif message.text in ['⏸ Пауза/продолжить', '▶ Продолжить']:
             if not state['is_working']:
                 bot.send_message(message.chat.id, "❌ Смена не начата")
                 show_shift_menu(message)
@@ -907,7 +949,7 @@ def handle_buttons(message):
                 bot.send_message(message.chat.id, "▶ Смена продолжена")
                 show_shift_menu(message)
         
-        elif message.text == '✅ ЗАВЕРШИТЬ СМЕНУ':
+        elif message.text == '✅ Завершить смену':
             if not state['is_working']:
                 bot.send_message(message.chat.id, "❌ Смена не начата")
                 show_shift_menu(message)
@@ -1126,7 +1168,6 @@ def handle_buttons(message):
 # --- Запуск бота ---
 print("✅ Бот запущен с PostgreSQL!")
 
-import traceback
 
 try:
     # Очищаем старые зависшие состояния
@@ -1170,7 +1211,6 @@ except Exception as e:
     print(f"❌ Критическая ошибка при запуске бота: {e}")
     traceback.print_exc()
 
-import time
 
 while True:
     try:
