@@ -134,6 +134,19 @@ def format_seconds_to_words(seconds):
     
     return f"{hours} {hours_str} {minutes} {minutes_str}"
 
+def format_duration(seconds):
+    """Форматирует секунды в '2 ч 15 мин'"""
+    seconds = int(seconds)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    
+    if hours > 0 and minutes > 0:
+        return f"{hours} ч {minutes} мин"
+    elif hours > 0:
+        return f"{hours} ч"
+    else:
+        return f"{minutes} мин"
+
 def ensure_timezone_aware(dt, timezone=MOSCOW_TZ):
     """Гарантирует, что datetime имеет часовой пояс"""
     if dt is None:
@@ -640,13 +653,82 @@ def send_motivation(chat_id, user_id):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    button_start = types.KeyboardButton('В бой! Начать смену')
-    button_pause = types.KeyboardButton('Пауза/Продолжить')
-    button_end = types.KeyboardButton('Завершить смену')
-    button_history = types.KeyboardButton('📊 Мои смены')
-    markup.add(button_start, button_pause, button_end, button_history)
+    button_shift = types.KeyboardButton('🚗 СМЕНА')
+    button_reports = types.KeyboardButton('📊 ОТЧЕТЫ')
+    button_plan = types.KeyboardButton('🎯 ПЛАН')
+    markup.row(button_shift, button_reports, button_plan)
+    
+    bot.send_message(message.chat.id, 
+                    '🚕 Вован Такси\n━━━━━━━━━━━━━━\nВыберите раздел:',
+                    reply_markup=markup)
 
-    bot.send_message(message.chat.id, 'Что делаем? Воин:', reply_markup=markup)
+def show_shift_menu(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    if not state['is_working']:
+        # Смена не активна
+        button_start = types.KeyboardButton('🟢 НАЧАТЬ СМЕНУ')
+        button_pause = types.KeyboardButton('⏸ ПАУЗА/ПРОДОЛЖИТЬ')
+        button_end = types.KeyboardButton('✅ ЗАВЕРШИТЬ СМЕНУ')
+        markup.row(button_start)
+        markup.row(button_pause, button_end)
+    else:
+        # Смена активна
+        if state['is_paused']:
+            # На паузе
+            work_duration = state['pause_start_time'] - state['shift_start_time']
+            pause_duration = get_moscow_time() - state['pause_start_time']
+            
+            time_str = format_duration(work_duration.total_seconds())
+            pause_str = format_duration(pause_duration.total_seconds())
+            
+            status_text = f"⏱ Отработано: {time_str}\n⏸ На паузе: {pause_str}"
+            
+            button_continue = types.KeyboardButton('▶ ПРОДОЛЖИТЬ')
+            button_end = types.KeyboardButton('✅ ЗАВЕРШИТЬ СМЕНУ')
+            markup.row(button_continue, button_end)
+        else:
+            # Активна, не на паузе
+            work_duration = get_moscow_time() - state['shift_start_time']
+            time_str = format_duration(work_duration.total_seconds())
+            
+            status_text = f"⏱ Отработано: {time_str}"
+            
+            button_pause = types.KeyboardButton('⏸ ПАУЗА/ПРОДОЛЖИТЬ')
+            button_end = types.KeyboardButton('✅ ЗАВЕРШИТЬ СМЕНУ')
+            markup.row(button_pause, button_end)
+    
+    # Кнопка "Назад" всегда
+    button_back = types.KeyboardButton('◀️ НАЗАД')
+    markup.row(button_back)
+    
+    # Отправляем сообщение
+    if 'status_text' in locals():
+        bot.send_message(message.chat.id, status_text, reply_markup=markup)
+    else:
+        bot.send_message(message.chat.id, "🚗 РАЗДЕЛ: СМЕНА", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text in ['🚗 СМЕНА', '📊 ОТЧЕТЫ', '🎯 ПЛАН', '◀️ НАЗАД'])
+def handle_main_menu(message):
+    if message.text == '🚗 СМЕНА':
+        show_shift_menu(message)
+    elif message.text == '📊 ОТЧЕТЫ':
+        # Пока заглушка
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        button_back = types.KeyboardButton('◀️ НАЗАД')
+        markup.row(button_back)
+        bot.send_message(message.chat.id, "📊 РАЗДЕЛ: ОТЧЕТЫ\n(в разработке)", reply_markup=markup)
+    elif message.text == '🎯 ПЛАН':
+        # Пока заглушка
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        button_back = types.KeyboardButton('◀️ НАЗАД')
+        markup.row(button_back)
+        bot.send_message(message.chat.id, "🎯 РАЗДЕЛ: ПЛАН\n(в разработке)", reply_markup=markup)
+    elif message.text == '◀️ НАЗАД':
+        send_welcome(message)
 
 @bot.message_handler(func=lambda message: 
     get_user_state(message.from_user.id).get('awaiting_cash_input', False) == True)
@@ -766,7 +848,9 @@ def handle_buttons(message):
             except Exception as e:
                 print(f"❌ Ошибка при сбросе в БД: {e}")
         
-        if message.text == 'В бой! Начать смену':
+        # ===== ОБРАБОТКА КНОПОК ИЗ РАЗДЕЛА "СМЕНА" =====
+        
+        if message.text == '🟢 НАЧАТЬ СМЕНУ':
             if not state['is_working']:
                 start_time = get_moscow_time()
                 shift_id = start_shift_in_db(user_id, start_time)
@@ -779,14 +863,138 @@ def handle_buttons(message):
                     state['pause_start_time'] = None
                     state['awaiting_cash_input'] = False
                     
-                    bot.send_message(message.chat.id, "Смена начата! 🚕")
+                    bot.send_message(message.chat.id, "✅ Смена начата! 🚕")
                     send_motivation(message.chat.id, user_id)
+                    # Возвращаем в меню СМЕНА
+                    show_shift_menu(message)
                 else:
                     bot.send_message(message.chat.id, "❌ Ошибка при начале смены")
             else:
-                bot.send_message(message.chat.id, "Смена уже начата!")
+                bot.send_message(message.chat.id, "⚠️ Смена уже начата!")
+                show_shift_menu(message)
+        
+        elif message.text in ['⏸ ПАУЗА/ПРОДОЛЖИТЬ', '▶ ПРОДОЛЖИТЬ']:
+            if not state['is_working']:
+                bot.send_message(message.chat.id, "❌ Смена не начата")
+                show_shift_menu(message)
+                return
+            
+            current_time = get_moscow_time()
+            
+            if not state['is_paused']:
+                # Ставим на паузу
+                state['is_paused'] = True
+                state['pause_start_time'] = current_time
+                
+                # Обновляем в БД
+                update_shift_pause(user_id, True, current_time)
+                
+                bot.send_message(message.chat.id, "⏸ Смена на паузе")
+                show_shift_menu(message)
+                
+            else:
+                # Снимаем с паузы
+                pause_duration = current_time - state['pause_start_time']
+                
+                # Обновляем время начала с учетом паузы
+                state['shift_start_time'] += pause_duration
+                state['is_paused'] = False
+                state['pause_start_time'] = None
+                
+                # Обновляем в БД
+                update_shift_pause(user_id, False, None)
+                
+                bot.send_message(message.chat.id, "▶ Смена продолжена")
+                show_shift_menu(message)
+        
+        elif message.text == '✅ ЗАВЕРШИТЬ СМЕНУ':
+            if not state['is_working']:
+                bot.send_message(message.chat.id, "❌ Смена не начата")
+                show_shift_menu(message)
+                return
+            
+            end_time = get_moscow_time()
+            
+            # Вычисляем чистое рабочее время (исключая паузы)
+            if state['is_paused']:
+                # Если на паузе, считаем до начала паузы
+                work_duration = state['pause_start_time'] - state['shift_start_time']
+            else:
+                work_duration = end_time - state['shift_start_time']
+            
+            total_seconds = work_duration.total_seconds()
+            
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            
+            if hours > 0 and minutes > 0:
+                time_str = f"{hours} ч {minutes} мин"
+            elif hours > 0:
+                time_str = f"{hours} ч"
+            else:
+                time_str = f"{minutes} мин"
+            
+            state['pending_shift_data'] = {
+                'start_time': state['shift_start_time'],
+                'end_time': end_time,
+                'duration_str': time_str
+            }
+            
+            state['awaiting_cash_input'] = True
+            
+            # Помечаем в БД что ожидаем ввод кассы
+            try:
+                conn = psycopg2.connect(os.environ['DATABASE_URL'])
+                cur = conn.cursor()
+                cur.execute('''
+                    UPDATE shifts 
+                    SET awaiting_cash_input = TRUE,
+                        end_time = %s
+                    WHERE driver_id = %s AND is_active = TRUE
+                ''', (end_time, user_id))
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"❌ Ошибка при обновлении БД: {e}")
+            
+            # НЕ возвращаем в меню СМЕНА - остаёмся в ожидании кассы
+            bot.send_message(message.chat.id, 
+                           f"⏱ Отработано: {time_str}\n"
+                           "💵 Введите сумму в кассе:")
+        
+        # ===== ОБРАБОТКА КНОПОК ГЛАВНОГО МЕНЮ (уже есть в handle_main_menu) =====
+        # Эти кнопки обрабатываются в handle_main_menu, но на всякий случай:
+        elif message.text in ['🚗 СМЕНА', '📊 ОТЧЕТЫ', '🎯 ПЛАН', '◀️ НАЗАД']:
+            # Эти кнопки уже обрабатываются в handle_main_menu
+            # Но если вдруг попали сюда - игнорируем
+            pass
+        
+        # ===== СТАРЫЕ КНОПКИ (для обратной совместимости) =====
+        elif message.text == 'В бой! Начать смену':
+            # Старая кнопка - перенаправляем на новую логику
+            if not state['is_working']:
+                start_time = get_moscow_time()
+                shift_id = start_shift_in_db(user_id, start_time)
+                
+                if shift_id:
+                    state['is_working'] = True
+                    state['shift_start_time'] = start_time
+                    state['shift_id'] = shift_id
+                    state['is_paused'] = False
+                    state['pause_start_time'] = None
+                    state['awaiting_cash_input'] = False
+                    
+                    bot.send_message(message.chat.id, "✅ Смена начата! 🚕")
+                    send_motivation(message.chat.id, user_id)
+                    send_welcome(message)  # Возвращаем в главное меню
+                else:
+                    bot.send_message(message.chat.id, "❌ Ошибка при начале смены")
+            else:
+                bot.send_message(message.chat.id, "⚠️ Смена уже начата!")
         
         elif message.text == 'Пауза/Продолжить':
+            # Старая кнопка - перенаправляем на новую логику
             if not state['is_working']:
                 bot.send_message(message.chat.id, "❌ Смена не начата")
                 return
@@ -818,6 +1026,7 @@ def handle_buttons(message):
                 bot.send_message(message.chat.id, "▶ Смена продолжена")
         
         elif message.text == 'Завершить смену':
+            # Старая кнопка - перенаправляем на новую логику
             if not state['is_working']:
                 bot.send_message(message.chat.id, "❌ Смена не начата")
                 return
@@ -902,6 +1111,11 @@ def handle_buttons(message):
             response += f"{total_shifts} смены / {total_cash} руб"
             
             bot.send_message(message.chat.id, response)
+            
+        # ===== ЕСЛИ КНОПКА НЕ РАСПОЗНАНА =====
+        else:
+            # Показываем стартовое меню
+            send_welcome(message)
             
     except Exception as e:
         print(f"❌ Ошибка в handle_buttons: {e}")
