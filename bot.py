@@ -653,13 +653,13 @@ def send_motivation(chat_id, user_id):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    button_shift = types.KeyboardButton('🚗 СМЕНА')
-    button_reports = types.KeyboardButton('📊 ОТЧЕТЫ')
-    button_plan = types.KeyboardButton('🎯 ПЛАН')
+    button_shift = types.KeyboardButton('🚗 Смена')
+    button_reports = types.KeyboardButton('📊 Отчеты')
+    button_plan = types.KeyboardButton('🎯 План')
     markup.row(button_shift, button_reports, button_plan)
     
     bot.send_message(message.chat.id, 
-                    '🚕 Вован Такси\n━━━━━━━━━━━━━━\nВыберите раздел:',
+                    '🚕 Тебя приветствует Вован - бот, помощник таксиста\n выбери раздел:',
                     reply_markup=markup)
 
 def show_shift_menu(message):
