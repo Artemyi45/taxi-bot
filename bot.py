@@ -52,6 +52,19 @@ def init_database():
         )
     ''')
     
+        # Создаем таблицу месячных планов
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS monthly_plans (
+            id SERIAL PRIMARY KEY,
+            driver_id BIGINT NOT NULL,
+            target_amount INTEGER NOT NULL CHECK (target_amount >= 0),
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL CHECK (month >= 1 AND month <= 12),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(driver_id, year, month)
+        )
+    ''')
+
     conn.commit()
     print("✅ База данных инициализирована (базовая структура)")
     
@@ -330,7 +343,9 @@ def get_user_state(user_id):
             'pause_start_time': None,
             "awaiting_cash_input": False,
             "pending_shift_data": None,
-            'shift_id': None
+            'shift_id': None,
+            'awaiting_plan_input': False,
+            'plan_type': None
         }
         print(f"🆕 Создано новое состояние для пользователя {user_id}")
         return user_states[user_id]
@@ -348,7 +363,9 @@ def get_user_state(user_id):
                 'pause_start_time': None,
                 "awaiting_cash_input": False,
                 "pending_shift_data": None,
-                'shift_id': None
+                'shift_id': None,
+                'awaiting_plan_input': False,
+                'plan_type': None
             }
             return user_states[user_id]
         
@@ -369,7 +386,9 @@ def get_user_state(user_id):
             'pause_start_time': active_shift.get('pause_start_time'),
             'awaiting_cash_input': active_shift.get('awaiting_cash_input', False),
             'pending_shift_data': None,  # Всегда None при восстановлении
-            'shift_id': active_shift.get('id')  # сохраняем ID смены для обновлений
+            'shift_id': active_shift.get('id'),
+            'awaiting_plan_input': False,
+            'plan_type': None  # сохраняем ID смены для обновлений
         }
         
         print(f"✅ Восстановлено состояние из БД для пользователя {user_id}")
@@ -679,6 +698,61 @@ def cleanup_old_states():
     except Exception as e:
         print(f"⚠️ Ошибка при очистке старых состояний: {e}")
 
+def get_monthly_plan(user_id, year=None, month=None):
+    """Получить месячный план пользователя"""
+    if year is None or month is None:
+        now = get_moscow_time()  # Используем нашу функцию для московского времени
+        year = now.year
+        month = now.month
+    
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cur.execute('''
+            SELECT * FROM monthly_plans 
+            WHERE driver_id = %s AND year = %s AND month = %s
+        ''', (user_id, year, month))
+        
+        plan = cur.fetchone()
+        cur.close()
+        conn.close()
+        return plan
+    except Exception as e:
+        print(f"❌ Ошибка при получении плана: {e}")
+        return None
+
+def save_monthly_plan(user_id, amount):
+    """Сохраняет или обновляет месячный план пользователя"""
+    now = get_moscow_time()
+    year = now.year
+    month = now.month
+    
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        
+        # Используем INSERT ON CONFLICT для обновления при повторе
+        cur.execute('''
+            INSERT INTO monthly_plans (driver_id, target_amount, year, month)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (driver_id, year, month) 
+            DO UPDATE SET target_amount = EXCLUDED.target_amount,
+                         created_at = CURRENT_TIMESTAMP
+            RETURNING id
+        ''', (user_id, amount, year, month))
+        
+        plan_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        print(f"✅ Месячный план #{plan_id} сохранен для пользователя {user_id}: {amount} руб")
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении плана: {e}")
+        return False
+
 # --- Команды бота ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -744,6 +818,90 @@ def show_shift_menu(message):
     # Отправляем сообщение
     bot.send_message(message.chat.id, status_text, reply_markup=markup)
 
+def show_plan_menu(message):
+    """Показывает меню управления планами"""
+    user_id = message.from_user.id
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    button_monthly = types.KeyboardButton('📅 План на месяц')
+    button_weekly = types.KeyboardButton('🔄 План на неделю')
+    button_back = types.KeyboardButton('◀️ Назад')
+    
+    markup.row(button_monthly, button_weekly)
+    markup.row(button_back)
+    
+    bot.send_message(
+        message.chat.id,
+        "🎯 Управление планами\n\n"
+        "Установите цели для мотивации и отслеживания прогресса",
+        reply_markup=markup
+    )
+
+@bot.message_handler(func=lambda message: message.text in ['✏️ Редактировать', '✏️ Установить план', '◀️ Назад к планам'])
+def handle_monthly_plan_menu(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    
+    if message.text == '✏️ Редактировать' or message.text == '✏️ Установить план':
+        # Включаем режим ожидания ввода плана
+        state['awaiting_plan_input'] = True
+        state['plan_type'] = 'monthly'
+        
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        button_cancel = types.KeyboardButton('❌ Отмена')
+        markup.row(button_cancel)
+        
+        bot.send_message(
+            message.chat.id,
+            "Введите сумму месячного плана в рублях:\n\n"
+            "Например: 80000",
+            reply_markup=markup
+        )
+        
+    elif message.text == '◀️ Назад к планам':
+        show_plan_menu(message)
+
+def show_monthly_plan_menu(message):
+    """Показывает меню месячного плана"""
+    user_id = message.from_user.id
+    
+    # Получаем текущий план
+    plan = get_monthly_plan(user_id)
+    
+    # Определяем текущий месяц и год для отображения
+    now = get_moscow_time()
+    month_names = [
+        'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+        'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'
+    ]
+    month_name = month_names[now.month - 1]
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    if plan:
+        # Если план есть
+        message_text = (
+            f"🎯 План на {month_name} {now.year}\n\n"
+            f"Текущий план: {plan['target_amount']:,} руб"
+        )
+        button_text = "✏️ Редактировать"
+    else:
+        # Если плана нет
+        message_text = (
+            f"🎯 План на {month_name} {now.year}\n\n"
+            f"План не задан"
+        )
+        button_text = "✏️ Установить план"
+    
+    button_edit = types.KeyboardButton(button_text)
+    button_back = types.KeyboardButton('◀️ Назад к планам')
+    
+    markup.row(button_edit)
+    markup.row(button_back)
+    
+    bot.send_message(message.chat.id, message_text, reply_markup=markup)
+
 @bot.message_handler(func=lambda message: message.text in ['🚗 Смена', '📊 Отчеты', '🎯 План', '◀️ Назад'])
 def handle_main_menu(message):
     if message.text == '🚗 Смена':
@@ -754,12 +912,8 @@ def handle_main_menu(message):
         button_back = types.KeyboardButton('◀️ Назад')
         markup.row(button_back)
         bot.send_message(message.chat.id, "📊 Раздел: Отчеты\n(в разработке)", reply_markup=markup)
-    elif message.text == '🎯 План':
-        # Пока заглушка
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        button_back = types.KeyboardButton('◀️ Назад')
-        markup.row(button_back)
-        bot.send_message(message.chat.id, "🎯 Раздел: План\n(в разработке)", reply_markup=markup)
+    elif message.text == '🎯 План':  # ← ДОБАВИЛИ ЭТО
+        show_plan_menu(message)       # ← И ЭТО
     elif message.text == '◀️ Назад':
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         button_shift = types.KeyboardButton('🚗 Смена')
@@ -769,9 +923,10 @@ def handle_main_menu(message):
         
         bot.send_message(
             message.chat.id, 
-            'Выбери раздел:',  # БЕЗ приветствия!
+            'Выбери раздел:', 
             reply_markup=markup
         )
+
 @bot.message_handler(func=lambda message: 
     get_user_state(message.from_user.id).get('awaiting_cash_input', False) == True)
 def handle_cash_input(message):
@@ -860,6 +1015,64 @@ def handle_cash_input(message):
         traceback.print_exc()
         bot.send_message(message.chat.id, "⚠️ Произошла ошибка. Попробуйте еще раз.")
 
+@bot.message_handler(func=lambda message: 
+    get_user_state(message.from_user.id).get('awaiting_plan_input', False) == True)
+def handle_plan_input(message):
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    
+    if message.text == '❌ Отмена':
+        # Отмена ввода
+        state['awaiting_plan_input'] = False
+        state['plan_type'] = None
+        show_monthly_plan_menu(message)
+        return
+    
+    try:
+        amount = int(message.text)
+        
+        if amount <= 0:
+            raise ValueError("Отрицательная или нулевая сумма")
+        
+        if amount > 10000000:  # Максимум 10 млн (можно изменить)
+            bot.send_message(message.chat.id, 
+                           "❌ Слишком большая сумма. Максимум 10 000 000 руб\n"
+                           "Введите сумму еще раз:")
+            return
+        
+        # Сохраняем план
+        success = save_monthly_plan(user_id, amount)
+        
+        if success:
+            # Сбрасываем состояние
+            state['awaiting_plan_input'] = False
+            state['plan_type'] = None
+            
+            # Показываем подтверждение и возвращаем в меню
+            now = get_moscow_time()
+            month_names = [
+                'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+                'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'
+            ]
+            month_name = month_names[now.month - 1]
+            
+            bot.send_message(
+                message.chat.id,
+                f"✅ План на {month_name} {now.year} установлен: {amount:,} руб"
+            )
+            
+            # Возвращаем в меню плана
+            show_plan_menu(message)
+        else:
+            bot.send_message(message.chat.id, 
+                           "❌ Ошибка при сохранении плана. Попробуйте еще раз:")
+            
+    except ValueError:
+        bot.send_message(message.chat.id, 
+                       "❌ Введите корректную сумму (целое число больше 0)\n"
+                       "Например: 80000\n\n"
+                       "Введите сумму еще раз:")
+
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
     try:
@@ -868,6 +1081,21 @@ def handle_buttons(message):
         
         state = get_user_state(user_id)
         print(f"📊 Состояние пользователя: is_working={state.get('is_working')}")
+        
+        # ===== ОБРАБОТКА КНОПКИ ОТМЕНЫ =====
+        if message.text == '❌ Отмена':
+            if state.get('awaiting_plan_input'):
+                print(f"❌ Отмена ввода плана для пользователя {user_id}")
+                state['awaiting_plan_input'] = False
+                state['plan_type'] = None
+                show_plan_menu(message)
+                return
+            elif state.get('awaiting_cash_input'):
+                print(f"❌ Отмена ввода кассы для пользователя {user_id}")
+                state['awaiting_cash_input'] = False
+                state['pending_shift_data'] = None
+                show_shift_menu(message)
+                return
         
         # Если смена активна и ожидает кассу, но нет данных - сбрасываем
         if state.get('awaiting_cash_input') and not state.get('pending_shift_data'):
@@ -906,7 +1134,6 @@ def handle_buttons(message):
                     state['awaiting_cash_input'] = False
                     
                     bot.send_message(message.chat.id, "✅ Смена начата! 🚕")
-                    # Возвращаем в меню СМЕНА
                 else:
                     bot.send_message(message.chat.id, "❌ Ошибка при начале смены")
             else:
@@ -1002,11 +1229,9 @@ def handle_buttons(message):
                            f"⏱ Отработано: {time_str}\n"
                            "💵 Введите сумму в кассе:")
         
-        # ===== ОБРАБОТКА КНОПОК ГЛАВНОГО МЕНЮ (уже есть в handle_main_menu) =====
-        # Эти кнопки обрабатываются в handle_main_menu, но на всякий случай:
+        # ===== ОБРАБОТКА КНОПОК ГЛАВНОГО МЕНЮ =====
         elif message.text in ['🚗 СМЕНА', '📊 ОТЧЕТЫ', '🎯 ПЛАН', '◀️ НАЗАД']:
             # Эти кнопки уже обрабатываются в handle_main_menu
-            # Но если вдруг попали сюда - игнорируем
             pass
         
         # ===== СТАРЫЕ КНОПКИ (для обратной совместимости) =====
@@ -1025,7 +1250,7 @@ def handle_buttons(message):
                     state['awaiting_cash_input'] = False
                     
                     bot.send_message(message.chat.id, "✅ Смена начата! 🚕")
-                    send_welcome(message)  # Возвращаем в главное меню
+                    send_welcome(message)
                 else:
                     bot.send_message(message.chat.id, "❌ Ошибка при начале смены")
             else:
