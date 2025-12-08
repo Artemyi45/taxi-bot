@@ -91,7 +91,26 @@ def get_shift_by_id(shift_id):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     
-    cur.execute("SELECT * FROM shifts WHERE id = %s", (shift_id,))
+    cur.execute("""
+        SELECT 
+            id,
+            driver_id,
+            start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as start_time,
+            end_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as end_time,
+            duration_text,
+            duration_seconds,
+            cash,
+            hourly_rate,
+            is_active,
+            is_paused,
+            pause_start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as pause_start_time,
+            pause_duration_seconds,
+            awaiting_cash_input,
+            created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as created_at
+        FROM shifts 
+        WHERE id = %s
+    """, (shift_id,))
+    
     shift = cur.fetchone()
     
     cur.close()
@@ -211,14 +230,14 @@ def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None
         SELECT 
             id,
             driver_id,
-            start_time,
-            end_time,
+            start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as start_time,
+            end_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as end_time,
             duration_text,
             cash,
             hourly_rate,
             is_active,
             is_paused,
-            created_at
+            created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as created_at
         FROM shifts 
         WHERE 1=1
     """
@@ -229,11 +248,11 @@ def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None
         params.append(driver_id)
     
     if start_date:
-        query += " AND DATE(start_time) >= %s"
+        query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') >= %s"
         params.append(start_date)
     
     if end_date:
-        query += " AND DATE(start_time) <= %s"
+        query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') <= %s"
         params.append(end_date)
     
     query += " ORDER BY start_time DESC LIMIT %s OFFSET %s"
@@ -251,11 +270,11 @@ def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None
         count_params.append(driver_id)
     
     if start_date:
-        count_query += " AND DATE(start_time) >= %s"
+        count_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') >= %s"
         count_params.append(start_date)
     
     if end_date:
-        count_query += " AND DATE(start_time) <= %s"
+        count_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') <= %s"
         count_params.append(end_date)
     
     cur.execute(count_query, count_params)
@@ -517,19 +536,14 @@ def main():
         end_date=st.session_state.filters['end_date']
     )
     
-    if shifts:
+        if shifts:
         # Создаем DataFrame
         df = pd.DataFrame(shifts)
         
-                # Форматируем данные с учетом часового пояса
-        try:
-            # Преобразуем в московское время
-            df['start_time'] = pd.to_datetime(df['start_time'], utc=True).dt.tz_convert('Europe/Moscow').dt.strftime('%d.%m.%Y %H:%M')
-            df['end_time'] = pd.to_datetime(df['end_time'], utc=True).dt.tz_convert('Europe/Moscow').dt.strftime('%d.%m.%Y %H:%M')
-        except:
-            # Если не получается - используем простой формат
-            df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
-            df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
+        # Форматируем даты (теперь они уже в MSK из БД)
+        df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
+        df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
+        df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%d.%m.%Y %H:%M')
         
         # Добавляем колонку статуса
         df['status'] = df.apply(
