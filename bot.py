@@ -711,23 +711,23 @@ def show_shift_menu(message):
     else:
         bot.send_message(message.chat.id, "🚗 РАЗДЕЛ: СМЕНА", reply_markup=markup)
 
-@bot.message_handler(func=lambda message: message.text in ['🚗 СМЕНА', '📊 ОТЧЕТЫ', '🎯 ПЛАН', '◀️ НАЗАД'])
+@bot.message_handler(func=lambda message: message.text in ['🚗 Смена', '📊 Отчеты', '🎯 План', '◀️ Назад'])
 def handle_main_menu(message):
-    if message.text == '🚗 СМЕНА':
+    if message.text == '🚗 Смена':
         show_shift_menu(message)
-    elif message.text == '📊 ОТЧЕТЫ':
+    elif message.text == '📊 Отчеты':
         # Пока заглушка
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        button_back = types.KeyboardButton('◀️ НАЗАД')
+        button_back = types.KeyboardButton('◀️ Назад')
         markup.row(button_back)
-        bot.send_message(message.chat.id, "📊 РАЗДЕЛ: ОТЧЕТЫ\n(в разработке)", reply_markup=markup)
-    elif message.text == '🎯 ПЛАН':
+        bot.send_message(message.chat.id, "📊 Раздел: отчеты\n(в разработке)", reply_markup=markup)
+    elif message.text == '🎯 План':
         # Пока заглушка
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        button_back = types.KeyboardButton('◀️ НАЗАД')
+        button_back = types.KeyboardButton('◀️ Назад')
         markup.row(button_back)
-        bot.send_message(message.chat.id, "🎯 РАЗДЕЛ: ПЛАН\n(в разработке)", reply_markup=markup)
-    elif message.text == '◀️ НАЗАД':
+        bot.send_message(message.chat.id, "🎯 Раздел: план\n(в разработке)", reply_markup=markup)
+    elif message.text == '◀️ Назад':
         send_welcome(message)
 
 @bot.message_handler(func=lambda message: 
