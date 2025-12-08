@@ -650,38 +650,6 @@ def cleanup_old_states():
     except Exception as e:
         print(f"⚠️ Ошибка при очистке старых состояний: {e}")
 
-
-    """Отправляет случайное мотивационное сообщение через 3 секунды"""
-    import threading
-    import time
-    
-    def motivation_timer():
-        time.sleep(3)
-        state = get_user_state(user_id)
-        
-        # Проверяем что смена активна и не на паузе
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute('''
-            SELECT is_active, is_paused 
-            FROM shifts 
-            WHERE driver_id = %s 
-            ORDER BY id DESC 
-            LIMIT 1
-        ''', (user_id,))
-        shift_status = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if shift_status and shift_status['is_active'] and not shift_status['is_paused']:
-            message = random.choice(motivational_messages)
-            bot.send_message(chat_id, message)
-            print(f"✅ Мотивация отправлена пользователю {user_id}")
-    
-    timer_thread = threading.Thread(target=motivation_timer)
-    timer_thread.daemon = True
-    timer_thread.start()
-
 # --- Команды бота ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -901,13 +869,11 @@ def handle_buttons(message):
                     
                     bot.send_message(message.chat.id, "✅ Смена начата! 🚕")
                     # Возвращаем в меню СМЕНА
-                    show_shift_menu(message)
                 else:
                     bot.send_message(message.chat.id, "❌ Ошибка при начале смены")
             else:
                 bot.send_message(message.chat.id, "⚠️ Смена уже начата!")
-                show_shift_menu(message)
-        
+                
         elif message.text in ['⏸ Пауза/продолжить', '▶ Продолжить']:
             if not state['is_working']:
                 bot.send_message(message.chat.id, "❌ Смена не начата")
@@ -1021,7 +987,6 @@ def handle_buttons(message):
                     state['awaiting_cash_input'] = False
                     
                     bot.send_message(message.chat.id, "✅ Смена начата! 🚕")
-                    send_motivation(message.chat.id, user_id)
                     send_welcome(message)  # Возвращаем в главное меню
                 else:
                     bot.send_message(message.chat.id, "❌ Ошибка при начале смены")
