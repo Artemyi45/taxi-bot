@@ -104,7 +104,19 @@ def get_edit_history(shift_id):
     cur = conn.cursor(cursor_factory=RealDictCursor)
     
     cur.execute("""
-        SELECT * FROM shift_edits 
+        SELECT 
+            id,
+            shift_id,
+            editor_id,
+            reason,
+            edited_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as edited_at,
+            old_start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as old_start_time,
+            new_start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as new_start_time,
+            old_end_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as old_end_time,
+            new_end_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as new_end_time,
+            old_cash,
+            new_cash
+        FROM shift_edits 
         WHERE shift_id = %s 
         ORDER BY edited_at DESC
     """, (shift_id,))
@@ -116,33 +128,79 @@ def get_edit_history(shift_id):
     return history
 
 def save_shift_edit(shift_id, editor_id, reason, old_start, new_start, old_end, new_end, old_cash, new_cash):
-    """Сохраняет изменения смены через функцию log_shift_edit"""
+    """Сохраняет изменения смены"""
     conn = get_connection()
     cur = conn.cursor()
     
     try:
-        cur.execute("""
-            SELECT log_shift_edit(
-                %s, %s, %s,
-                %s, %s,
-                %s, %s,
-                %s, %s
-            )
-        """, (
+        # 1. Сохраняем в историю изменений
+        cur.execute('''
+            INSERT INTO shift_edits 
+            (shift_id, editor_id, reason, edited_at,
+             old_start_time, new_start_time, old_end_time, new_end_time,
+             old_cash, new_cash)
+            VALUES (%s, %s, %s, NOW(),
+                    %s, %s, %s, %s,
+                    %s, %s)
+        ''', (
             shift_id, editor_id, reason,
             old_start, new_start,
             old_end, new_end,
             old_cash, new_cash
         ))
         
+        # 2. Рассчитываем длительность
+        duration = new_end - new_start
+        total_seconds = int(duration.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        
+        if hours > 0 and minutes > 0:
+            duration_str = f"{hours} ч {minutes} мин"
+        elif hours > 0:
+            duration_str = f"{hours} ч"
+        else:
+            duration_str = f"{minutes} мин"
+        
+        # 3. Рассчитываем средний час (избегаем деления на 0)
+        if total_seconds > 0:
+            hourly_rate = int(new_cash / (total_seconds / 3600))
+        else:
+            hourly_rate = 0
+        
+        # 4. Обновляем саму смену
+        cur.execute('''
+            UPDATE shifts 
+            SET start_time = %s, 
+                end_time = %s,
+                cash = %s,
+                duration_text = %s,
+                duration_seconds = %s,
+                hourly_rate = %s
+            WHERE id = %s
+            RETURNING id
+        ''', (
+            new_start, new_end, new_cash,
+            duration_str, total_seconds, hourly_rate,
+            shift_id
+        ))
+        
+        updated_id = cur.fetchone()
+        
         conn.commit()
-        return True, None
-    except Exception as e:
-        conn.rollback()
-        return False, str(e)
-    finally:
         cur.close()
         conn.close()
+        
+        if updated_id:
+            return True, None
+        else:
+            return False, "Смена не найдена"
+            
+    except Exception as e:
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False, str(e)
 
 def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None, end_date=None):
     """Получает смены с пагинацией и фильтрами"""
@@ -311,6 +369,20 @@ def parse_datetime(dt_value):
 def main():
     check_auth()
     
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.close()
+        st.success("✅ Подключение к БД установлено")
+    except Exception as e:
+        st.error(f"❌ Ошибка подключения к БД: {e}")
+        return
+    
+    st.title("🚕 Админ-панель Такси-бота")
+    st.markdown("---")
+
     st.title("🚕 Админ-панель Такси-бота")
     st.markdown("---")
     
@@ -449,9 +521,15 @@ def main():
         # Создаем DataFrame
         df = pd.DataFrame(shifts)
         
-        # Форматируем данные
-        df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
-        df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
+                # Форматируем данные с учетом часового пояса
+        try:
+            # Преобразуем в московское время
+            df['start_time'] = pd.to_datetime(df['start_time'], utc=True).dt.tz_convert('Europe/Moscow').dt.strftime('%d.%m.%Y %H:%M')
+            df['end_time'] = pd.to_datetime(df['end_time'], utc=True).dt.tz_convert('Europe/Moscow').dt.strftime('%d.%m.%Y %H:%M')
+        except:
+            # Если не получается - используем простой формат
+            df['start_time'] = pd.to_datetime(df['start_time']).dt.strftime('%d.%m.%Y %H:%M')
+            df['end_time'] = pd.to_datetime(df['end_time']).dt.strftime('%d.%m.%Y %H:%M')
         
         # Добавляем колонку статуса
         df['status'] = df.apply(
@@ -707,14 +785,19 @@ def show_edit_form(shift):
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("**Текущие значения:**")
-        st.write(f"Начало: `{start_time_obj.strftime('%d.%m.%Y %H:%M')}`")
-        st.write(f"Окончание: `{end_time_obj.strftime('%d.%m.%Y %H:%M')}`")
-        st.write(f"Касса: `{shift['cash']} руб`")
-        if shift.get('hourly_rate'):
-            st.write(f"Средний час: `{shift['hourly_rate']} руб/ч`")
-        if 'duration_text' in shift:
-            st.write(f"Продолжительность: `{shift['duration_text']}`")
+            st.markdown("**Текущие значения:**")
+    
+        # Используем parse_datetime для корректного парсинга
+            start_display = parse_datetime(shift['start_time'])
+            end_display = parse_datetime(shift['end_time'])
+    
+            st.write(f"Начало: `{start_display.strftime('%d.%m.%Y %H:%M')}`")
+            st.write(f"Окончание: `{end_display.strftime('%d.%m.%Y %H:%M')}`")
+            st.write(f"Касса: `{shift['cash']} руб`")
+            if shift.get('hourly_rate'):
+                st.write(f"Средний час: `{shift['hourly_rate']} руб/ч`")
+            if 'duration_text' in shift:
+                st.write(f"Продолжительность: `{shift['duration_text']}`")
     
     with col2:
         st.markdown("**Новые значения:**")

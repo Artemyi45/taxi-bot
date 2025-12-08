@@ -33,6 +33,25 @@ def init_database():
         )
     ''')
     
+    # СОЗДАЕМ ТАБЛИЦУ ДЛЯ АДМИНКИ (ДОБАВЬ ЭТОТ БЛОК)
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS shift_edits (
+            id SERIAL PRIMARY KEY,
+            shift_id INTEGER NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+            editor_id BIGINT NOT NULL,
+            edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reason TEXT,
+            old_start_time TIMESTAMP,
+            new_start_time TIMESTAMP,
+            old_end_time TIMESTAMP,
+            new_end_time TIMESTAMP,
+            old_cash INTEGER,
+            new_cash INTEGER,
+            old_hourly_rate INTEGER,
+            new_hourly_rate INTEGER
+        )
+    ''')
+    
     conn.commit()
     print("✅ База данных инициализирована (базовая структура)")
     
@@ -99,6 +118,16 @@ def init_database():
             print("   ⏭️ Поле is_active отсутствует, индекс не создан")
     except Exception as e:
         print(f"   ⚠️ Ошибка при создании idx_shifts_active: {e}")
+    
+    # ДОБАВЛЯЕМ ИНДЕКС ДЛЯ shift_edits (ВАЖНО!)
+    try:
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_shift_edits_shift_id 
+            ON shift_edits(shift_id)
+        ''')
+        print("   ✅ Индекс idx_shift_edits_shift_id создан")
+    except Exception as e:
+        print(f"   ⚠️ Ошибка при создании idx_shift_edits_shift_id: {e}")
     
     cur.close()
     conn.close()
