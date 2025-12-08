@@ -732,7 +732,6 @@ def handle_main_menu(message):
         markup.row(button_back)
         bot.send_message(message.chat.id, "🎯 Раздел: План\n(в разработке)", reply_markup=markup)
     elif message.text == '◀️ Назад':
-        send_welcome(message)
 
 @bot.message_handler(func=lambda message: 
     get_user_state(message.from_user.id).get('awaiting_cash_input', False) == True)
