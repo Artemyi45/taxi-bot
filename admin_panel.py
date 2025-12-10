@@ -230,14 +230,14 @@ def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None
         SELECT 
             id,
             driver_id,
-            start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as start_time,
-            end_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as end_time,
+            start_time,
+            end_time,
             duration_text,
             cash,
             hourly_rate,
             is_active,
             is_paused,
-            created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as created_at
+            created_at
         FROM shifts 
         WHERE 1=1
     """
@@ -248,11 +248,11 @@ def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None
         params.append(driver_id)
     
     if start_date:
-        query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') >= %s"
+        query += " AND DATE(start_time) >= %s"  # Без конвертации
         params.append(start_date)
     
     if end_date:
-        query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') <= %s"
+        query += " AND DATE(start_time) <= %s"  # Без конвертации
         params.append(end_date)
     
     query += " ORDER BY start_time DESC LIMIT %s OFFSET %s"
@@ -270,11 +270,11 @@ def get_all_shifts_paginated(offset=0, limit=20, driver_id=None, start_date=None
         count_params.append(driver_id)
     
     if start_date:
-        count_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') >= %s"
+        count_query += " AND DATE(start_time) >= %s"
         count_params.append(start_date)
     
     if end_date:
-        count_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') <= %s"
+        count_query += " AND DATE(start_time) <= %s"
         count_params.append(end_date)
     
     cur.execute(count_query, count_params)
