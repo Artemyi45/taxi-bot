@@ -95,18 +95,18 @@ def get_shift_by_id(shift_id):
         SELECT 
             id,
             driver_id,
-            start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as start_time,
-            end_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as end_time,
+            start_time,
+            end_time,
             duration_text,
             duration_seconds,
             cash,
             hourly_rate,
             is_active,
             is_paused,
-            pause_start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as pause_start_time,
+            pause_start_time,
             pause_duration_seconds,
             awaiting_cash_input,
-            created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' as created_at
+            created_at
         FROM shifts 
         WHERE id = %s
     """, (shift_id,))
@@ -504,11 +504,11 @@ def main():
             stats_params.append(st.session_state.filters['driver_id'])
         
         if st.session_state.filters['start_date']:
-            stats_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') >= %s"
+            stats_query += " AND DATE(start_time) >= %s"  # Убрал конвертацию
             stats_params.append(st.session_state.filters['start_date'])
         
         if st.session_state.filters['end_date']:
-            stats_query += " AND DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow') <= %s"
+            stats_query += " AND DATE(start_time) <= %s"  # Убрал конвертацию
             stats_params.append(st.session_state.filters['end_date'])
         
         cur.execute(stats_query, stats_params)
