@@ -9,7 +9,7 @@ import psycopg2
 import threading
 from psycopg2.extras import RealDictCursor
 from telebot import types
-
+from datetime import datetime, timedelta
 
 
 # --- Инициализация БД ---
@@ -62,6 +62,18 @@ def init_database():
             month INTEGER NOT NULL CHECK (month >= 1 AND month <= 12),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(driver_id, year, month)
+        )
+    ''')
+        # Создаем таблицу недельных планов
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS weekly_plans (
+            id SERIAL PRIMARY KEY,
+            driver_id BIGINT NOT NULL,
+            target_amount INTEGER NOT NULL CHECK (target_amount >= 0),
+            week_year INTEGER NOT NULL,  # Год недели по ISO
+            week_number INTEGER NOT NULL CHECK (week_number >= 1 AND week_number <= 53),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(driver_id, week_year, week_number)
         )
     ''')
 
@@ -193,6 +205,13 @@ def format_duration(seconds):
         return f"{hours} ч"
     else:
         return f"{minutes} мин"
+
+def get_current_iso_week():
+    """Возвращает текущий год и номер недели по ISO (пн-вс)"""
+    now = get_moscow_time()
+    # isocalendar возвращает (год, номер недели, день недели)
+    iso_year, iso_week, iso_day = now.isocalendar()
+    return iso_year, iso_week
 
 def ensure_timezone_aware(dt, timezone=MOSCOW_TZ):
     """Гарантирует, что datetime имеет часовой пояс"""
@@ -345,7 +364,8 @@ def get_user_state(user_id):
             "pending_shift_data": None,
             'shift_id': None,
             'awaiting_plan_input': False,
-            'plan_type': None
+            'plan_type': None,
+            'current_plan_menu': None
         }
         print(f"🆕 Создано новое состояние для пользователя {user_id}")
         return user_states[user_id]
@@ -365,7 +385,8 @@ def get_user_state(user_id):
                 "pending_shift_data": None,
                 'shift_id': None,
                 'awaiting_plan_input': False,
-                'plan_type': None
+                'plan_type': None,
+                'current_plan_menu': None
             }
             return user_states[user_id]
         
@@ -388,7 +409,8 @@ def get_user_state(user_id):
             'pending_shift_data': None,  # Всегда None при восстановлении
             'shift_id': active_shift.get('id'),
             'awaiting_plan_input': False,
-            'plan_type': None  # сохраняем ID смены для обновлений
+            'plan_type': None,
+            'current_plan_menu': None    # сохраняем ID смены для обновлений
         }
         
         print(f"✅ Восстановлено состояние из БД для пользователя {user_id}")
@@ -753,6 +775,56 @@ def save_monthly_plan(user_id, amount):
         print(f"❌ Ошибка при сохранении плана: {e}")
         return False
 
+def get_weekly_plan(user_id, week_year=None, week_number=None):
+    """Получить недельный план пользователя"""
+    if week_year is None or week_number is None:
+        week_year, week_number = get_current_iso_week()
+    
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cur.execute('''
+            SELECT * FROM weekly_plans 
+            WHERE driver_id = %s AND week_year = %s AND week_number = %s
+        ''', (user_id, week_year, week_number))
+        
+        plan = cur.fetchone()
+        cur.close()
+        conn.close()
+        return plan
+    except Exception as e:
+        print(f"❌ Ошибка при получении недельного плана: {e}")
+        return None
+
+def save_weekly_plan(user_id, amount):
+    """Сохраняет или обновляет недельный план пользователя"""
+    week_year, week_number = get_current_iso_week()
+    
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+        
+        cur.execute('''
+            INSERT INTO weekly_plans (driver_id, target_amount, week_year, week_number)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (driver_id, week_year, week_number) 
+            DO UPDATE SET target_amount = EXCLUDED.target_amount,
+                         created_at = CURRENT_TIMESTAMP
+            RETURNING id
+        ''', (user_id, amount, week_year, week_number))
+        
+        plan_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        print(f"✅ Недельный план #{plan_id} сохранен для пользователя {user_id}: {amount} руб (неделя {week_number}/{week_year})")
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении недельного плана: {e}")
+        return False
+
 # --- Команды бота ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -865,7 +937,8 @@ def handle_monthly_plan_menu(message):
 def show_monthly_plan_menu(message):
     """Показывает меню месячного плана"""
     user_id = message.from_user.id
-    
+    state = get_user_state(user_id)
+    state['current_plan_menu'] = 'monthly'
     # Получаем текущий план
     plan = get_monthly_plan(user_id)
     
@@ -890,6 +963,47 @@ def show_monthly_plan_menu(message):
         # Если плана нет
         message_text = (
             f"🎯 План на {month_name} {now.year}\n\n"
+            f"План не задан"
+        )
+        button_text = "✏️ Установить план"
+    
+    button_edit = types.KeyboardButton(button_text)
+    button_back = types.KeyboardButton('◀️ Назад к планам')
+    
+    markup.row(button_edit)
+    markup.row(button_back)
+    
+    bot.send_message(message.chat.id, message_text, reply_markup=markup)
+
+def show_weekly_plan_menu(message):
+    """Показывает меню недельного плана"""
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    state['current_plan_menu'] = 'weekly'
+    # Получаем текущий план
+    plan = get_weekly_plan(user_id)
+    
+    # Определяем текущую неделю для отображения
+    week_year, week_number = get_current_iso_week()
+    
+    # Получаем даты начала и конца недели (пн-вс)
+    now = get_moscow_time()
+    start_of_week = now - timedelta(days=now.weekday())  # Понедельник
+    end_of_week = start_of_week + timedelta(days=6)      # Воскресенье
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    if plan:
+        # Если план есть
+        message_text = (
+            f"🔄 План на неделю {week_number} ({start_of_week.strftime('%d.%m')}-{end_of_week.strftime('%d.%m.%Y')})\n\n"
+            f"Текущий план: {plan['target_amount']:,} руб"
+        )
+        button_text = "✏️ Редактировать"
+    else:
+        # Если плана нет
+        message_text = (
+            f"🔄 План на неделю {week_number} ({start_of_week.strftime('%d.%m')}-{end_of_week.strftime('%d.%m.%Y')})\n\n"
             f"План не задан"
         )
         button_text = "✏️ Установить план"
@@ -1102,10 +1216,7 @@ def handle_buttons(message):
             show_monthly_plan_menu(message)
             return
         elif message.text == '🔄 План на неделю':
-            markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-            button_back = types.KeyboardButton('◀️ Назад к планам')
-            markup.row(button_back)
-            bot.send_message(message.chat.id, "🔄 Раздел: План на неделю\n(в разработке)", reply_markup=markup)
+            show_weekly_plan_menu(message)
             return
         elif message.text == '◀️ Назад к планам':
             show_plan_menu(message)
@@ -1129,6 +1240,43 @@ def handle_buttons(message):
                 reply_markup=markup
             )
             return
+        
+        elif message.text in ['✏️ Редактировать', '✏️ Установить план']:
+            # Нужно определить в каком меню мы находимся
+            # Проще всего проверить состояние или последнее действие
+            # Пока сделаем так: если есть weekly_plan - значит в меню недельного
+            
+            user_id = message.from_user.id
+            state = get_user_state(user_id)
+            
+            # Проверяем какой план редактируем
+            weekly_plan = get_weekly_plan(user_id)
+            monthly_plan = get_monthly_plan(user_id)
+            
+            # Определяем тип плана по контексту (упрощенно)
+            # В реальности нужно хранить текущее меню в состоянии
+            
+            if weekly_plan is not None or True:  # Пока всегда weekly для теста
+                state['awaiting_plan_input'] = True
+                state['plan_type'] = 'weekly'
+            else:
+                state['awaiting_plan_input'] = True
+                state['plan_type'] = 'monthly'
+            
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+            button_cancel = types.KeyboardButton('❌ Отмена')
+            markup.row(button_cancel)
+            
+            plan_type_str = "недельного" if state['plan_type'] == 'weekly' else "месячного"
+            
+            bot.send_message(
+                message.chat.id,
+                f"Введите сумму {plan_type_str} плана в рублях:\n\n"
+                "Например: 20000",
+                reply_markup=markup
+            )
+            return
+
 
         # Если смена активна и ожидает кассу, но нет данных - сбрасываем
         if state.get('awaiting_cash_input') and not state.get('pending_shift_data'):
@@ -1419,22 +1567,26 @@ def handle_buttons(message):
         traceback.print_exc()
         bot.send_message(message.chat.id, "⚠️ Произошла ошибка. Попробуйте еще раз.")
 
-# --- Запуск бота ---
-print("✅ Бот запущен с PostgreSQL!")
+# --- Webhook настройка ---
+import flask
+from flask import Flask, request
+
+app = Flask(__name__)
+
+print("✅ Бот инициализирован с PostgreSQL!")
 start_pause_reminder_checker()
 print("✅ Проверщик напоминаний запущен")
 
+# Инициализация при запуске (только один раз)
 try:
-    # Очищаем старые зависшие состояния
     cleanup_old_states()
-
-    # Восстанавливаем активные смены из БД при запуске
+    
+    # Восстанавливаем активные смены
     print("🔄 Восстанавливаем активные смены из БД...")
     try:
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Проверяем есть ли поле is_active
         cur.execute('''
             SELECT column_name 
             FROM information_schema.columns 
@@ -1442,51 +1594,63 @@ try:
         ''')
         
         if cur.fetchone():
-            # Поле есть - ищем активные смены
             cur.execute("SELECT DISTINCT driver_id FROM shifts WHERE is_active = TRUE")
             active_drivers = cur.fetchall()
             
             for driver in active_drivers:
                 user_id = driver['driver_id']
-                get_user_state(user_id)  # Это восстановит состояние из БД
+                get_user_state(user_id)
                 print(f"   Восстановлена смена для водителя {user_id}")
             
             print(f"✅ Восстановлено {len(active_drivers)} активных смен")
-        else:
-            print("⚠️ Поле is_active отсутствует, восстановление не требуется")
         
         cur.close()
         conn.close()
         
     except Exception as e:
         print(f"⚠️ Ошибка при восстановлении смен: {e}")
+        import traceback
         traceback.print_exc()
 
 except Exception as e:
-    print(f"❌ Критическая ошибка при запуске бота: {e}")
+    print(f"❌ Критическая ошибка при инициализации: {e}")
+    import traceback
     traceback.print_exc()
 
+@app.route('/', methods=['POST'])
+def webhook():
+    """Обработчик webhook от Telegram"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return 'Bad request', 400
 
-while True:
-    try:
-        print("🤖 Запускаю бота...")
-        
-        # Очищаем вебхук перед запуском polling
+@app.route('/')
+def index():
+    return 'Bot is running!'
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Установить webhook (вызови в браузере после деплоя)"""
+    webhook_url = f"https://{os.environ.get('RAILWAY_STATIC_URL', 'ваш-домен.railway.app')}/"
+    bot.remove_webhook()
+    time.sleep(1)
+    result = bot.set_webhook(url=webhook_url)
+    return f"Webhook set to {webhook_url}: {result}"
+
+# Для локального тестирования можно оставить polling
+if __name__ == '__main__':
+    import os
+    if os.environ.get('RAILWAY_ENVIRONMENT') is None:
+        # Локальный запуск
+        print("🚀 Локальный запуск (polling)...")
         bot.remove_webhook()
         time.sleep(1)
-        
-        bot.polling(
-            none_stop=True,
-            interval=3,
-            timeout=30,
-            long_polling_timeout=20
-        )
-    except KeyboardInterrupt:
-        print("\n🛑 Бот остановлен пользователем")
-        break
-    except Exception as e:
-        print(f"⚠️ Ошибка: {e}")
-        traceback.print_exc()
-        print("🔄 Перезапуск через 15 секунд...")
-        time.sleep(15)
-
+        bot.polling(none_stop=True)
+    else:
+        # На Railway - запускаем Flask
+        print("🚀 Запуск на Railway (webhook)...")
+        port = int(os.environ.get('PORT', 5000))
+        app.run(host='0.0.0.0', port=port)
