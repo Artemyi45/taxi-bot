@@ -64,18 +64,18 @@ def init_database():
             UNIQUE(driver_id, year, month)
         )
     ''')
-        # Создаем таблицу недельных планов
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS weekly_plans (
-            id SERIAL PRIMARY KEY,
-            driver_id BIGINT NOT NULL,
-            target_amount INTEGER NOT NULL CHECK (target_amount >= 0),
-            week_year INTEGER NOT NULL,  # Год недели по ISO
-            week_number INTEGER NOT NULL CHECK (week_number >= 1 AND week_number <= 53),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(driver_id, week_year, week_number)
-        )
-    ''')
+    #     # Создаем таблицу недельных планов
+    # cur.execute('''
+    #     CREATE TABLE IF NOT EXISTS weekly_plans (
+    #         id SERIAL PRIMARY KEY,
+    #         driver_id BIGINT NOT NULL,
+    #         target_amount INTEGER NOT NULL CHECK (target_amount >= 0),
+    #         week_year INTEGER NOT NULL,  # Год недели по ISO
+    #         week_number INTEGER NOT NULL CHECK (week_number >= 1 AND week_number <= 53),
+    #         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    #         UNIQUE(driver_id, week_year, week_number)
+    #     )
+    # ''')
 
     conn.commit()
     print("✅ База данных инициализирована (базовая структура)")
